@@ -1,7 +1,8 @@
 """Harmony and note-level evaluation metrics.
 
-Includes OnsetF1, OnsetPrecision, OnsetRecall (onset detection quality) and
-NoteDensityPearson (correlation of per-step note counts).
+Includes OnsetF1, OnsetPrecision, OnsetRecall (onset detection quality),
+NoteDensityPearson (correlation of per-step note counts),
+PitchClassHistogramCorrelation, and IntervalHistogramCorrelation.
 """
 
 from __future__ import annotations
@@ -376,3 +377,219 @@ class NoteDensityPearson(Metric):
         if np.isnan(r):
             r = 0.0
         return {'note_density_pearson': float(r)}
+
+
+def _pitch_class_histogram(notes: list[MidiNote]) -> np.ndarray:
+    """Build a 12-bin pitch class (chroma) histogram from a list of notes.
+
+    Each note contributes 1 count to its pitch class (pitch % 12).
+
+    Args:
+        notes: List of MidiNote events.
+
+    Returns:
+        Float array of shape (12,) summing to 1 (or all-zeros if empty).
+    """
+    hist = np.zeros(12, dtype=np.float64)
+    for note in notes:
+        hist[note.pitch % 12] += 1.0
+    total = hist.sum()
+    if total > 0:
+        hist /= total
+    return hist
+
+
+def _gt_pitch_class_histogram(piano_roll: np.ndarray) -> np.ndarray:
+    """Build a pitch class histogram from a (128, T) piano-roll matrix.
+
+    Each (pitch, time) cell with nonzero velocity contributes to pitch % 12.
+
+    Args:
+        piano_roll: Velocity matrix of shape (128, T).
+
+    Returns:
+        Float array of shape (12,) normalised to sum to 1.
+    """
+    hist = np.zeros(12, dtype=np.float64)
+    for pitch in range(128):
+        active = (piano_roll[pitch, :] > 0).sum()
+        if active > 0:
+            hist[pitch % 12] += float(active)
+    total = hist.sum()
+    if total > 0:
+        hist /= total
+    return hist
+
+
+@ComponentRegistry.register('metric', 'pitch_class_histogram_correlation')
+class PitchClassHistogramCorrelation(Metric):
+    """Pearson correlation between ground-truth and predicted pitch class histograms.
+
+    Computes 12-bin chroma histograms from the ground-truth piano_roll and
+    the detected notes, then computes the Pearson r between the two histograms.
+
+    Returns:
+        {'pitch_class_histogram_correlation': float}  in [-1, 1].
+        Returns 0.0 when histograms are flat (no variance).
+    """
+
+    @property
+    def name(self) -> str:
+        """Metric identifier."""
+        return 'pitch_class_histogram_correlation'
+
+    @property
+    def requires_notes(self) -> bool:
+        """This metric requires detected notes."""
+        return True
+
+    def compute(
+        self,
+        gt: BarData,
+        recon: ReconstructedBar,
+    ) -> dict[str, float]:
+        """Compute pitch class histogram correlation.
+
+        Args:
+            gt: Ground-truth bar with piano_roll of shape (128, T).
+            recon: Reconstructed bar with detected_notes.
+
+        Returns:
+            Dict with key 'pitch_class_histogram_correlation'.
+        """
+        gt_hist = _gt_pitch_class_histogram(gt.piano_roll)
+        pred_hist = _pitch_class_histogram(recon.detected_notes)
+
+        if gt_hist.std() < 1e-8 or pred_hist.std() < 1e-8:
+            # Degenerate case: one histogram is flat
+            return {'pitch_class_histogram_correlation': 0.0}
+
+        r, _ = pearsonr(gt_hist, pred_hist)
+        if np.isnan(r):
+            r = 0.0
+        return {'pitch_class_histogram_correlation': float(r)}
+
+
+def _interval_histogram(notes: list[MidiNote], num_bins: int = 25) -> np.ndarray:
+    """Build an interval histogram from a list of notes.
+
+    Intervals are computed between all simultaneously active notes within
+    each time step (i.e., polyphonic intervals). Interval values range
+    from 0 (unison) to 127 semitones; bins cover [0, num_bins).
+
+    Args:
+        notes: List of MidiNote events.
+        num_bins: Number of histogram bins (default 25 to cover 0-24 semitones).
+
+    Returns:
+        Float array of shape (num_bins,) normalised to sum to 1.
+    """
+    hist = np.zeros(num_bins, dtype=np.float64)
+    if not notes:
+        return hist
+
+    # Find the time span
+    max_step = max(n.offset_step for n in notes)
+    if max_step == 0:
+        return hist
+
+    # Collect active pitches per step
+    from collections import defaultdict
+    active: dict[int, list[int]] = defaultdict(list)
+    for note in notes:
+        for t in range(note.onset_step, note.offset_step):
+            active[t].append(note.pitch)
+
+    count = 0.0
+    for t, pitches in active.items():
+        pitches_sorted = sorted(set(pitches))
+        for i in range(len(pitches_sorted)):
+            for j in range(i + 1, len(pitches_sorted)):
+                interval = pitches_sorted[j] - pitches_sorted[i]
+                bin_idx = min(interval, num_bins - 1)
+                hist[bin_idx] += 1.0
+                count += 1.0
+
+    if count > 0:
+        hist /= count
+    return hist
+
+
+def _gt_interval_histogram(piano_roll: np.ndarray, num_bins: int = 25) -> np.ndarray:
+    """Build an interval histogram from a (128, T) piano-roll matrix.
+
+    At each time step, collects all active pitches and accumulates their
+    pairwise intervals.
+
+    Args:
+        piano_roll: Velocity matrix of shape (128, T).
+        num_bins: Number of histogram bins.
+
+    Returns:
+        Float array of shape (num_bins,) normalised to sum to 1.
+    """
+    hist = np.zeros(num_bins, dtype=np.float64)
+    T = piano_roll.shape[1]
+    count = 0.0
+
+    for t in range(T):
+        active_pitches = np.where(piano_roll[:, t] > 0)[0].tolist()
+        for i in range(len(active_pitches)):
+            for j in range(i + 1, len(active_pitches)):
+                interval = active_pitches[j] - active_pitches[i]
+                bin_idx = min(interval, num_bins - 1)
+                hist[bin_idx] += 1.0
+                count += 1.0
+
+    if count > 0:
+        hist /= count
+    return hist
+
+
+@ComponentRegistry.register('metric', 'interval_histogram_correlation')
+class IntervalHistogramCorrelation(Metric):
+    """Pearson correlation between ground-truth and predicted interval histograms.
+
+    Computes pairwise interval distributions from all simultaneously active
+    notes in the ground truth (from piano_roll) and the detected notes, then
+    returns the Pearson r between the two 25-bin histograms.
+
+    Returns:
+        {'interval_histogram_correlation': float}  in [-1, 1].
+        Returns 0.0 for flat histograms (no polyphony or all unison).
+    """
+
+    @property
+    def name(self) -> str:
+        """Metric identifier."""
+        return 'interval_histogram_correlation'
+
+    @property
+    def requires_notes(self) -> bool:
+        """This metric requires detected notes."""
+        return True
+
+    def compute(
+        self,
+        gt: BarData,
+        recon: ReconstructedBar,
+    ) -> dict[str, float]:
+        """Compute interval histogram correlation.
+
+        Args:
+            gt: Ground-truth bar with piano_roll of shape (128, T).
+            recon: Reconstructed bar with detected_notes.
+
+        Returns:
+            Dict with key 'interval_histogram_correlation'.
+        """
+        gt_hist = _gt_interval_histogram(gt.piano_roll)
+        pred_hist = _interval_histogram(recon.detected_notes)
+
+        if gt_hist.std() < 1e-8 or pred_hist.std() < 1e-8:
+            return {'interval_histogram_correlation': 0.0}
+
+        r, _ = pearsonr(gt_hist, pred_hist)
+        if np.isnan(r):
+            r = 0.0
+        return {'interval_histogram_correlation': float(r)}
