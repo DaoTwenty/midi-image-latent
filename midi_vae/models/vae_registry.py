@@ -291,3 +291,191 @@ class PlaygroundV25(DiffusersVAE):
     subfolder = "vae"
     _latent_channels = 4
     _latent_scale_factor = 8
+
+
+# =============================================================================
+# Concrete VAE wrappers — Group 3: High-channel VAEs (16 latent channels, subfolder)
+# =============================================================================
+
+
+@ComponentRegistry.register("vae", "sd3_medium")
+class SD3Medium(DiffusersVAE):
+    """Stable Diffusion 3 Medium VAE with 16-channel latent space.
+
+    HF model: stabilityai/stable-diffusion-3-medium-diffusers
+    Latent channels: 16, loaded from subfolder='vae'.
+    """
+
+    model_id = "stabilityai/stable-diffusion-3-medium-diffusers"
+    subfolder = "vae"
+    _latent_channels = 16
+    _latent_scale_factor = 8
+
+
+@ComponentRegistry.register("vae", "flux1_dev")
+class Flux1Dev(DiffusersVAE):
+    """FLUX.1-dev VAE with 16-channel latent space.
+
+    HF model: black-forest-labs/FLUX.1-dev
+    Latent channels: 16, loaded from subfolder='vae'.
+    """
+
+    model_id = "black-forest-labs/FLUX.1-dev"
+    subfolder = "vae"
+    _latent_channels = 16
+    _latent_scale_factor = 8
+
+
+@ComponentRegistry.register("vae", "flux1_kontext")
+class Flux1Kontext(DiffusersVAE):
+    """FLUX.1-Kontext-dev VAE with 16-channel latent space.
+
+    HF model: black-forest-labs/FLUX.1-Kontext-dev
+    Latent channels: 16, loaded from subfolder='vae'.
+    """
+
+    model_id = "black-forest-labs/FLUX.1-Kontext-dev"
+    subfolder = "vae"
+    _latent_channels = 16
+    _latent_scale_factor = 8
+
+
+@ComponentRegistry.register("vae", "flux2_dev")
+class Flux2Dev(DiffusersVAE):
+    """FLUX.2-dev VAE with 16-channel latent space.
+
+    HF model: black-forest-labs/FLUX.2-dev
+    Latent channels: 16, loaded from subfolder='vae'.
+    """
+
+    model_id = "black-forest-labs/FLUX.2-dev"
+    subfolder = "vae"
+    _latent_channels = 16
+    _latent_scale_factor = 8
+
+
+@ComponentRegistry.register("vae", "cogview4")
+class CogView4(DiffusersVAE):
+    """CogView4 VAE with 16-channel latent space.
+
+    HF model: THUDM/CogView4-6B
+    Latent channels: 16, loaded from subfolder='vae'.
+    """
+
+    model_id = "THUDM/CogView4-6B"
+    subfolder = "vae"
+    _latent_channels = 16
+    _latent_scale_factor = 8
+
+
+# =============================================================================
+# Concrete VAE wrappers — Group 4: Custom loading (flux2_tiny)
+# =============================================================================
+
+
+@ComponentRegistry.register("vae", "flux2_tiny")
+class Flux2Tiny(FrozenImageVAE):
+    """FLUX.2-Tiny AutoEncoder with bfloat16 and custom loading via AutoModel.
+
+    HF model: fal/FLUX.2-Tiny-AutoEncoder
+    Latent channels: 16, loaded via AutoModel.from_pretrained with bfloat16.
+
+    This model uses a non-standard API that does not follow the diffusers
+    AutoencoderKL encode/decode interface, so it overrides load_model,
+    encode, and decode directly.
+    """
+
+    _latent_channels: int = 16
+    _latent_scale_factor: int = 8
+
+    MODEL_ID: str = "fal/FLUX.2-Tiny-AutoEncoder"
+
+    @property
+    def latent_channels(self) -> int:
+        """Number of channels in the latent space."""
+        return self._latent_channels
+
+    @property
+    def latent_scale_factor(self) -> int:
+        """Spatial downscale factor from input image to latent map."""
+        return self._latent_scale_factor
+
+    def load_model(self) -> None:
+        """Load the FLUX.2-Tiny AutoEncoder via AutoModel in bfloat16.
+
+        Always loads in bfloat16 regardless of config.dtype.  All parameters
+        are frozen and the model is placed in eval mode.
+
+        Raises:
+            ImportError: If ``transformers`` is not installed.
+        """
+        from transformers import AutoModel  # local import — not all envs have transformers
+
+        logger.info(
+            "Loading VAE flux2_tiny (model_id=%s, dtype=bfloat16, device=%s)",
+            self.MODEL_ID,
+            self.device,
+        )
+
+        model = AutoModel.from_pretrained(self.MODEL_ID, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        model = model.to(self.device)
+        model.eval()
+
+        for param in model.parameters():
+            param.requires_grad_(False)
+
+        self._model = model
+        logger.info("VAE flux2_tiny loaded and frozen.")
+
+    @torch.no_grad()
+    def encode(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode images to latent mean and standard deviation.
+
+        The FLUX.2-Tiny encoder returns a distribution object.  Processes the
+        batch in chunks of ``config.batch_size`` to bound GPU memory usage.
+
+        Args:
+            images: Float tensor, shape (B, 3, H, W), values in [-1, 1].
+
+        Returns:
+            Tuple ``(z_mu, z_sigma)`` each of shape (B, 16, H_lat, W_lat).
+        """
+        self.ensure_loaded()
+
+        images = images.to(device=self.device, dtype=torch.bfloat16)
+        batch_size = self.config.batch_size
+        all_mu: list[torch.Tensor] = []
+        all_sigma: list[torch.Tensor] = []
+
+        for start in range(0, images.shape[0], batch_size):
+            chunk = images[start : start + batch_size]
+            dist = self._model.encode(chunk).latent_dist
+            all_mu.append(dist.mean)
+            all_sigma.append(dist.std)
+
+        return torch.cat(all_mu, dim=0), torch.cat(all_sigma, dim=0)
+
+    @torch.no_grad()
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        """Decode latent vectors back to image space.
+
+        Processes the batch in chunks of ``config.batch_size``.
+
+        Args:
+            z: Float tensor, shape (B, 16, H_lat, W_lat).
+
+        Returns:
+            Reconstructed images, shape (B, 3, H, W).
+        """
+        self.ensure_loaded()
+
+        z = z.to(device=self.device, dtype=torch.bfloat16)
+        batch_size = self.config.batch_size
+        chunks: list[torch.Tensor] = []
+
+        for start in range(0, z.shape[0], batch_size):
+            chunk = z[start : start + batch_size]
+            recon = self._model.decode(chunk).sample
+            chunks.append(recon)
+
+        return torch.cat(chunks, dim=0)
