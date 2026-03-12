@@ -1,0 +1,19 @@
+## POP909 dataset configuration
+## 909 pop songs with MIDI annotations (.mid files)
+
+data:
+  dataset: pop909
+  instruments:
+    - piano
+    - strings
+    - guitar
+  bars_per_instrument: 5000
+  min_notes_per_bar: 2
+  time_steps: 96
+  target_resolution: [128, 128]
+
+render:
+  channel_strategy: vos
+  pitch_axis: height
+  normalize_range: [-1.0, 1.0]
+  resize_method: bilinear

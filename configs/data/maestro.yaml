@@ -1,0 +1,18 @@
+## MAESTRO dataset configuration
+## MIDI and Audio Edited for Synchronous TRacks and Organization
+## Classical piano performances in MIDI format
+
+data:
+  dataset: maestro
+  instruments:
+    - piano
+  bars_per_instrument: 10000
+  min_notes_per_bar: 4
+  time_steps: 96
+  target_resolution: [128, 128]
+
+render:
+  channel_strategy: vos
+  pitch_axis: height
+  normalize_range: [-1.0, 1.0]
+  resize_method: bilinear
