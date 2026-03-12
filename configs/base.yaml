@@ -1,0 +1,67 @@
+## Base configuration — defaults for all experiments
+## Override per-experiment in configs/experiments/*.yaml
+
+paths:
+  data_root: data/
+  output_root: outputs/
+  cache_dir: outputs/cache/
+
+data:
+  dataset: lpd5
+  instruments:
+    - drums
+    - bass
+    - guitar
+    - piano
+    - strings
+  bars_per_instrument: 5000
+  min_notes_per_bar: 2
+  time_steps: 96
+  target_resolution: [128, 128]
+
+render:
+  channel_strategy: velocity_only
+  pitch_axis: height
+  normalize_range: [-1.0, 1.0]
+  resize_method: bilinear
+
+vaes:
+  - model_id: stabilityai/sd-vae-ft-mse
+    name: sd_vae_ft_mse
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+note_detection:
+  method: global_threshold
+  params:
+    threshold: 0.5
+
+sublatent:
+  enabled: false
+  approach: mlp
+  target_dim: 64
+  training:
+    learning_rate: 0.0001
+    epochs: 100
+    batch_size: 64
+    weight_decay: 0.00001
+    pixel_weight: 1.0
+    onset_weight: 5.0
+    kl_weight: 0.001
+    patience: 10
+
+metrics:
+  - all
+
+tracking:
+  experiment_name: default
+  wandb_enabled: false
+  wandb_project: midi-image-vae
+  save_reconstructions: true
+  save_latents: true
+  checkpoint_every_n: 500
+
+seed: 42
+device: cuda
+num_workers: 4

@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "midi-image-vae"
@@ -31,8 +31,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.4"]
-extra = ["wandb>=0.16", "umap-learn>=0.5", "hmmlearn>=0.3"]
+dev = [
+    "pytest>=8.0", 
+    "pytest-cov>=5.0", 
+    "ruff>=0.4"
+]
+extra = [
+    "wandb>=0.16",
+    "umap-learn>=0.5",
+    "hmmlearn>=0.3",
+    "numba<0.60",
+    "llvmlite<0.43"
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

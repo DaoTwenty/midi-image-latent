@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: "Project orchestrator that manages the multi-agent development team. Spawns teammates, assigns tasks, monitors progress, handles merges, and adapts when problems arise. This is the primary agent the user interacts with."
-tools: Read, Write, Edit, Bash, Glob, Grep
+tools: Read, Write, Edit, Bash, Glob, Grep, Agent
 model: opus
 ---
 

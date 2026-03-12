@@ -1,8 +1,9 @@
 .PHONY: setup test test-cov lint preprocess run clean status
 
 setup:
-	python3 -m venv .venv
-	.venv/bin/pip install -e ".[dev,extra]"
+	python3.11 -m venv .venv
+	.venv/bin/python -m pip install -U pip setuptools wheel
+	.venv/bin/python -m pip install -e ".[dev,extra]"
 	@echo "Activate: source .venv/bin/activate"
 
 test:
