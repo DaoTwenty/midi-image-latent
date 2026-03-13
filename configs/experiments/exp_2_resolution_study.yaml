@@ -1,0 +1,115 @@
+## Experiment 2 — Resolution & Orientation Study
+## 2 pitch_axis orientations x 3 resolutions = 6 rendering variants
+## Goal: Determine the best piano-roll image layout for VAE encoding.
+
+paths:
+  data_root: data/
+  output_root: outputs/exp_2/
+  cache_dir: outputs/exp_2/cache/
+
+data:
+  dataset: lpd5
+  instruments:
+    - drums
+    - bass
+    - guitar
+    - piano
+    - strings
+  bars_per_instrument: 5000
+  min_notes_per_bar: 2
+  time_steps: 96
+  target_resolution: [128, 128]
+
+# Default render config — pipeline sweeps over render_variants
+render:
+  channel_strategy: velocity_only
+  pitch_axis: height
+  normalize_range: [-1.0, 1.0]
+  resize_method: bilinear
+
+# Render sweep variants (2 orientations x 3 resolutions)
+render_variants:
+  - name: height_64x64
+    channel_strategy: velocity_only
+    pitch_axis: height
+    normalize_range: [-1.0, 1.0]
+    resize_method: bilinear
+    target_resolution: [64, 64]
+
+  - name: height_128x128
+    channel_strategy: velocity_only
+    pitch_axis: height
+    normalize_range: [-1.0, 1.0]
+    resize_method: bilinear
+    target_resolution: [128, 128]
+
+  - name: height_256x256
+    channel_strategy: velocity_only
+    pitch_axis: height
+    normalize_range: [-1.0, 1.0]
+    resize_method: bilinear
+    target_resolution: [256, 256]
+
+  - name: width_64x64
+    channel_strategy: velocity_only
+    pitch_axis: width
+    normalize_range: [-1.0, 1.0]
+    resize_method: bilinear
+    target_resolution: [64, 64]
+
+  - name: width_128x128
+    channel_strategy: velocity_only
+    pitch_axis: width
+    normalize_range: [-1.0, 1.0]
+    resize_method: bilinear
+    target_resolution: [128, 128]
+
+  - name: width_256x256
+    channel_strategy: velocity_only
+    pitch_axis: width
+    normalize_range: [-1.0, 1.0]
+    resize_method: bilinear
+    target_resolution: [256, 256]
+
+vaes:
+  # Best-performing VAE from Exp 1A (placeholder — update after Exp 1A)
+  - model_id: stabilityai/sd-vae-ft-mse
+    name: sd_vae_ft_mse
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+note_detection:
+  method: global_threshold
+  params:
+    threshold: 0.5
+
+sublatent:
+  enabled: false
+  approach: mlp
+  target_dim: 64
+  training:
+    learning_rate: 0.0001
+    epochs: 100
+    batch_size: 64
+    weight_decay: 0.00001
+    pixel_weight: 1.0
+    onset_weight: 5.0
+    kl_weight: 0.001
+    patience: 10
+
+metrics:
+  - reconstruction
+  - harmony
+
+tracking:
+  experiment_name: exp_2_resolution_study
+  wandb_enabled: false
+  wandb_project: midi-image-vae
+  save_reconstructions: true
+  save_latents: false
+  checkpoint_every_n: 500
+
+seed: 42
+device: cuda
+num_workers: 4

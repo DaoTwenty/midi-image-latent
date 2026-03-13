@@ -48,6 +48,9 @@ extra = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-x --tb=short -q"
+markers = [
+    "gpu: marks tests that require a CUDA GPU (deferred — skipped by default)",
+]
 
 [tool.ruff]
 line-length = 120

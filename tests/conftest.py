@@ -169,7 +169,7 @@ class StubNoteDetector(NoteDetector):
                             pitch=pitch,
                             onset_step=onset,
                             offset_step=offset,
-                            velocity=int(row[onset].item() * 127),
+                            velocity=max(0, min(127, int(row[onset].item() * 127))),
                         ))
                     in_note = False
         return notes
