@@ -1,0 +1,165 @@
+## Experiment 3 — Channel Strategy Comparison
+## 3 channel strategies x 12 VAEs = 36 conditions
+## Goal: Determine whether richer channel encoding (VOS) improves reconstruction.
+
+paths:
+  data_root: data/
+  output_root: outputs/exp_3/
+  cache_dir: outputs/exp_3/cache/
+
+data:
+  dataset: lpd5
+  instruments:
+    - drums
+    - bass
+    - guitar
+    - piano
+    - strings
+  bars_per_instrument: 5000
+  min_notes_per_bar: 2
+  time_steps: 96
+  target_resolution: [128, 128]
+
+# Default render config — pipeline sweeps over channel_strategies
+render:
+  channel_strategy: velocity_only
+  pitch_axis: height
+  normalize_range: [-1.0, 1.0]
+  resize_method: bilinear
+
+# Channel strategy sweep
+channel_strategies:
+  - name: velocity_only
+    channel_strategy: velocity_only
+    pitch_axis: height
+    normalize_range: [-1.0, 1.0]
+    resize_method: bilinear
+
+  - name: vo_split
+    channel_strategy: vo_split
+    pitch_axis: height
+    normalize_range: [-1.0, 1.0]
+    resize_method: bilinear
+
+  - name: vos
+    channel_strategy: vos
+    pitch_axis: height
+    normalize_range: [-1.0, 1.0]
+    resize_method: bilinear
+
+vaes:
+  - model_id: stabilityai/sd-vae-ft-mse
+    name: sd_vae_ft_mse
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+  - model_id: stabilityai/sdxl-vae
+    name: sdxl_vae
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+  - model_id: zelaki/eq-vae-ema
+    name: eq_vae_ema
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+  - model_id: KBlueLeaf/EQ-SDXL-VAE
+    name: eq_sdxl_vae
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+  - model_id: CompVis/stable-diffusion-v1-4
+    name: sd_v1_4
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+    subfolder: vae
+
+  - model_id: playgroundai/playground-v2.5-1024px-aesthetic
+    name: playground_v25
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+    subfolder: vae
+
+  - model_id: stabilityai/stable-diffusion-3-medium-diffusers
+    name: sd3_medium
+    latent_type: mean
+    dtype: float32
+    batch_size: 16
+    subfolder: vae
+
+  - model_id: black-forest-labs/FLUX.1-dev
+    name: flux1_dev
+    latent_type: mean
+    dtype: bfloat16
+    batch_size: 16
+    subfolder: vae
+
+  - model_id: black-forest-labs/FLUX.1-Kontext-dev
+    name: flux1_kontext
+    latent_type: mean
+    dtype: bfloat16
+    batch_size: 16
+    subfolder: vae
+
+  - model_id: black-forest-labs/FLUX.2-dev
+    name: flux2_dev
+    latent_type: mean
+    dtype: bfloat16
+    batch_size: 16
+    subfolder: vae
+
+  - model_id: fal/FLUX.2-Tiny-AutoEncoder
+    name: flux2_tiny
+    latent_type: mean
+    dtype: bfloat16
+    batch_size: 16
+
+  - model_id: THUDM/CogView4-6B
+    name: cogview4
+    latent_type: mean
+    dtype: bfloat16
+    batch_size: 16
+    subfolder: vae
+
+note_detection:
+  method: global_threshold
+  params:
+    threshold: 0.5
+
+sublatent:
+  enabled: false
+  approach: mlp
+  target_dim: 64
+  training:
+    learning_rate: 0.0001
+    epochs: 100
+    batch_size: 64
+    weight_decay: 0.00001
+    pixel_weight: 1.0
+    onset_weight: 5.0
+    kl_weight: 0.001
+    patience: 10
+
+metrics:
+  - reconstruction
+  - harmony
+  - rhythm
+  - dynamics
+
+tracking:
+  experiment_name: exp_3_channel_strategy
+  wandb_enabled: false
+  wandb_project: midi-image-vae
+  save_reconstructions: true
+  save_latents: false
+  checkpoint_every_n: 500
+
+seed: 42
+device: cuda
+num_workers: 4

@@ -1,0 +1,139 @@
+## Experiment 4 — Latent Space Analysis
+## Sub-experiments: 4A (probabilistic), 4B (manifold), 4C (sub-latent), 4D (conditioning)
+## Goal: Understand and compress the VAE latent space for music generation.
+
+## === Sub-experiment 4A: Probabilistic Encoding ===
+## Compare mu (mean) vs sample from the latent distribution
+## Best VAE, both latent_type variants
+
+paths:
+  data_root: data/
+  output_root: outputs/exp_4/
+  cache_dir: outputs/exp_4/cache/
+
+data:
+  dataset: lpd5
+  instruments:
+    - drums
+    - bass
+    - guitar
+    - piano
+    - strings
+  bars_per_instrument: 5000
+  min_notes_per_bar: 2
+  time_steps: 96
+  target_resolution: [128, 128]
+
+render:
+  channel_strategy: vos
+  pitch_axis: height
+  normalize_range: [-1.0, 1.0]
+  resize_method: bilinear
+
+## 4A: mu vs sample encoding comparison
+encoding_variants:
+  - name: mean_encoding
+    model_id: stabilityai/sd-vae-ft-mse
+    name_vae: sd_vae_ft_mse
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+  - name: sample_encoding
+    model_id: stabilityai/sd-vae-ft-mse
+    name_vae: sd_vae_ft_mse
+    latent_type: sample
+    dtype: float32
+    batch_size: 32
+
+## 4B: Full-dataset latent manifold analysis
+## Collect all z_mu for PCA/UMAP dimensionality reduction and clustering
+latent_analysis:
+  enabled: true
+  n_pca_components: 50
+  n_umap_components: 2
+  umap_n_neighbors: 15
+  umap_min_dist: 0.1
+  cluster_k: 20  # k-means clusters
+
+## 4C: Sub-latent compression
+## 4 approaches x 5 target dims = 20 conditions per VAE
+sublatent_variants:
+  approaches:
+    - pca
+    - mlp
+    - sub_vae
+    - umap
+  target_dims:
+    - 16
+    - 32
+    - 64
+    - 128
+    - 256
+
+## 4D: Conditioned sub-latent
+## 3 conditioning families
+conditioning_variants:
+  - name: instrument_conditioning
+    features: [instrument]
+    embed_dim: 32
+    fusion: concat
+
+  - name: pitch_range_conditioning
+    features: [pitch_mean, pitch_std, pitch_range]
+    embed_dim: 32
+    fusion: concat
+
+  - name: rhythm_conditioning
+    features: [note_density, onset_rate, tempo]
+    embed_dim: 32
+    fusion: film
+
+vaes:
+  # Best-performing VAE from Exp 1A (placeholder — update after Exp 1A)
+  - model_id: stabilityai/sd-vae-ft-mse
+    name: sd_vae_ft_mse
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+note_detection:
+  method: global_threshold
+  params:
+    threshold: 0.5
+
+sublatent:
+  enabled: true
+  approach: pca
+  target_dim: 64
+  training:
+    learning_rate: 0.0001
+    epochs: 100
+    batch_size: 64
+    weight_decay: 0.00001
+    pixel_weight: 1.0
+    onset_weight: 5.0
+    kl_weight: 0.001
+    patience: 10
+  conditioning:
+    features:
+      - instrument
+    embed_dim: 32
+    fusion: concat
+
+metrics:
+  - reconstruction
+  - latent_space
+  - information
+
+tracking:
+  experiment_name: exp_4_latent_analysis
+  wandb_enabled: false
+  wandb_project: midi-image-vae
+  save_reconstructions: true
+  save_latents: true
+  checkpoint_every_n: 500
+
+seed: 42
+device: cuda
+num_workers: 4
