@@ -15,6 +15,22 @@ Research project investigating whether frozen pretrained image VAEs (Stable Diff
 - structlog for logging, h5py for storage, pandas/pyarrow for metrics tables
 - Optional: wandb for remote tracking
 
+## Environment & Hardware Constraints
+
+### Virtual Environment
+**ALWAYS use the project `.venv`.**  All agents and commands must use `.venv/bin/python` (or activate `.venv` first). Never use system Python or create new venvs.
+- Run tests: `.venv/bin/python -m pytest tests/ -x --tb=short`
+- Run scripts: `.venv/bin/python -m midi_vae ...`
+- Install deps: `.venv/bin/pip install ...`
+
+### GPU Status: CPU-ONLY (for now)
+We are currently running on **CPU only**. GPU will be available later.
+- **Do NOT** attempt to download real VAE model weights or run real model inference — it will fail or OOM.
+- **Do** write all code to be GPU-ready (use `device.py` utilities, respect `cfg.device`).
+- **Do** use mocks/synthetic tensors in tests for any VAE encode/decode.
+- **Deferred GPU tasks** are tracked in `docs/GPU_DEFERRED_TASKS.md` — agents should read this file and add to it when they encounter work that must wait for GPU.
+- When GPU becomes available, the orchestrator will work through that list.
+
 ## Directory Layout
 ```
 midi_vae/              # Core library package
@@ -93,12 +109,14 @@ scripts/               # CLI entry points
 - Full implementation spec: `specs/implementation_spec.md`
 - Team coordination rules: `specs/coordination.md`
 - Role-specific briefs: `specs/task_*.md`
+- GPU-deferred tasks: `docs/GPU_DEFERRED_TASKS.md` (read/write — track work that needs GPU)
 
 ## Testing
-- `pytest` from repo root. All tests in `tests/`.
+- `.venv/bin/python -m pytest tests/` from repo root. All tests in `tests/`.
 - Every public method needs at least 1 test.
 - Use fixtures from `tests/conftest.py` for synthetic data.
-- Run: `make test` (quick) or `make test-cov` (with coverage).
+- Run: `.venv/bin/python -m pytest tests/ -x --tb=short` (quick) or `make test-cov` (with coverage).
+- GPU-dependent tests should be marked `@pytest.mark.gpu` and skipped by default.
 
 ## Agent Teams Orchestration
 
