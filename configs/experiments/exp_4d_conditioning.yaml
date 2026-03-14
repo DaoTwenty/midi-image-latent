@@ -11,7 +11,7 @@ paths:
   cache_dir: outputs/exp_4d/cache/
 
 data:
-  dataset: lpd5
+  dataset: lakh
   instruments:
     - drums
     - bass

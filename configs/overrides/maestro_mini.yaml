@@ -1,0 +1,6 @@
+## Mini-mode override for MAESTRO dataset
+## Use with: python scripts/run_experiment.py <CONFIG> --mini --override-config configs/overrides/maestro_mini.yaml
+data:
+  dataset: maestro
+paths:
+  data_root: data/maestro/maestro-v3.0.0

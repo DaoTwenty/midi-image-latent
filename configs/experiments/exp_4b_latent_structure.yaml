@@ -9,7 +9,7 @@ paths:
   cache_dir: outputs/exp_4b/cache/
 
 data:
-  dataset: lpd5
+  dataset: lakh
   instruments:
     - drums
     - bass

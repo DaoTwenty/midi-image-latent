@@ -70,10 +70,10 @@ class TestPathsConfig:
 class TestDataConfig:
     """Tests for DataConfig schema."""
 
-    def test_default_dataset_is_lpd5(self) -> None:
-        """Default dataset is 'lpd5'."""
+    def test_default_dataset_is_lakh(self) -> None:
+        """Default dataset is 'lakh'."""
         cfg = DataConfig()
-        assert cfg.dataset == "lpd5"
+        assert cfg.dataset == "lakh"
 
     def test_default_instruments(self) -> None:
         """Default instruments list includes standard 5."""
@@ -309,7 +309,7 @@ class TestLoadConfig:
         if not BASE_YAML.exists():
             pytest.skip("base.yaml not found")
         cfg = load_config(paths=[str(BASE_YAML)])
-        assert cfg.data.dataset == "lpd5"
+        assert cfg.data.dataset == "lakh"
         assert cfg.seed == 42
         assert cfg.render.channel_strategy == "velocity_only"
 

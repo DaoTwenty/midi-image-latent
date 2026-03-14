@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 # Map dataset name to glob pattern for the raw files
 _DATASET_GLOB: dict[str, str] = {
-    "lpd5": "**/*.npz",
+    "lakh": "**/*.mid",
+    "lpd5": "**/*.npz",  # deprecated — kept for backwards compat with local .npz files
     "pop909": "**/*.mid",
     "maestro": "**/*.midi",
 }
@@ -44,7 +45,8 @@ class IngestStage(PipelineStage):
 
     def __init__(self, config: ExperimentConfig, max_files: int | None = None) -> None:
         super().__init__(config)
-        self._max_files = max_files
+        # Explicit max_files overrides config; otherwise read from config.data.max_files
+        self._max_files = max_files if max_files is not None else config.data.max_files
 
     def io(self) -> StageIO:
         """Declare that this stage produces 'bars' with no upstream inputs.
@@ -86,6 +88,9 @@ class IngestStage(PipelineStage):
             return {"bars": []}
 
         all_files = sorted(data_root.glob(glob_pattern))
+        # MAESTRO uses both .midi and .mid — if primary glob found nothing, try the other
+        if not all_files and dataset_name == "maestro":
+            all_files = sorted(data_root.glob("**/*.mid"))
         if self._max_files is not None:
             all_files = all_files[: self._max_files]
 

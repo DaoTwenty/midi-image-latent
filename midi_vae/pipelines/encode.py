@@ -22,6 +22,7 @@ import torch
 from midi_vae.config import ExperimentConfig
 from midi_vae.data.types import LatentEncoding, PianoRollImage
 from midi_vae.models.vae_wrapper import FrozenImageVAE
+import midi_vae.models.vae_registry  # noqa: F401 — trigger registration of all VAEs
 from midi_vae.pipelines.base import PipelineStage, StageIO, compute_hash
 from midi_vae.registry import ComponentRegistry
 

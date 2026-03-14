@@ -4,7 +4,8 @@ Each dataset class wraps a preprocessed set of BarData objects and
 renders them into PianoRollImage tensors on the fly.
 
 Available datasets:
-    LPD5Dataset   — Lakh Pianoroll Dataset (5-track, .npz format).
+    LakhDataset   — Lakh MIDI Dataset (LMD full, raw .mid files).
+    LPD5Dataset   — Deprecated alias for LakhDataset (.npz pypianoroll).
     Pop909Dataset — POP909 dataset (.mid files).
     MaestroDataset — MAESTRO classical piano dataset (.mid files).
 
@@ -185,31 +186,92 @@ class MidiDataset(Dataset):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# LPD5
+# Lakh MIDI Dataset
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@ComponentRegistry.register("dataset", "lakh")
+class LakhDataset(MidiDataset):
+    """Dataset for the Lakh MIDI Dataset (LMD full version, raw .mid files).
+
+    Expects data_root to contain .mid files in a flat or nested directory
+    structure.  Files are loaded recursively via ``**/*.mid``.
+
+    Download the dataset with::
+
+        bash scripts/download_data.sh lakh
+
+    which will place files at ``data/lakh/``.  Expected structure::
+
+        data_root/
+            <hash_prefix>/
+                <song_id>.mid
+            ...
+
+    or any nested structure — all ``.mid`` files are discovered recursively.
+
+    Args:
+        data_config: DataConfig controlling instruments and bar sampling.
+        render_config: RenderConfig controlling rendering strategy.
+        data_root: Path to the root of the Lakh MIDI dataset.
+        seed: Random seed for reproducible bar sampling.
+        max_files: If set, limit the number of .mid files loaded.  Useful
+                   for quick debugging runs.
+    """
+
+    def __init__(
+        self,
+        data_config: DataConfig,
+        render_config: RenderConfig,
+        data_root: str | Path,
+        seed: int = 42,
+        max_files: int | None = None,
+    ) -> None:
+        self._max_files = max_files
+        super().__init__(data_config, render_config, data_root, seed)
+
+    def _load_bars(self) -> list[BarData]:
+        """Recursively load all .mid files from data_root.
+
+        Returns:
+            List of BarData objects from all valid tracks/files.
+        """
+        if not self.data_root.exists():
+            logger.warning("LakhDataset data_root does not exist: %s", self.data_root)
+            return []
+
+        ingestor = self._build_ingestor()
+        bars: list[BarData] = []
+
+        files = sorted(self.data_root.glob("**/*.mid"))
+        if self._max_files is not None:
+            files = files[: self._max_files]
+
+        logger.info("LakhDataset: scanning %d .mid files in %s", len(files), self.data_root)
+
+        for file_path in files:
+            file_bars = ingestor.ingest_file(file_path)
+            bars.extend(file_bars)
+
+        return bars
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LPD5 (deprecated — kept for backwards compatibility with .npz files)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 @ComponentRegistry.register("dataset", "lpd5")
 class LPD5Dataset(MidiDataset):
-    """Dataset for the Lakh Pianoroll Dataset (5-track, .npz format).
+    """Deprecated: Dataset for the Lakh Pianoroll Dataset (5-track, .npz format).
+
+    The LPD5 download URL is no longer available.  This class is kept for
+    backwards compatibility with any locally available .npz files.  For new
+    work, use ``LakhDataset`` (registry name ``"lakh"``) with the raw Lakh
+    MIDI Dataset instead.
 
     Expects data_root to contain LPD5 .npz files, either in flat or
     nested directory structure.  Files are loaded recursively.
-
-    Dataset structure expected at data_root::
-
-        data_root/
-            <song_id>.npz
-            <song_id>.npz
-            ...
-
-    or nested::
-
-        data_root/
-            A/
-                <song_id>.npz
-            B/
-                <song_id>.npz
 
     Args:
         data_config: DataConfig controlling instruments and bar sampling.
@@ -238,7 +300,11 @@ class LPD5Dataset(MidiDataset):
             List of BarData objects from all valid tracks/files.
         """
         if not self.data_root.exists():
-            logger.warning("LPD5 data_root does not exist: %s", self.data_root)
+            logger.warning(
+                "LPD5Dataset data_root does not exist: %s — "
+                "LPD5 is deprecated; consider using LakhDataset instead.",
+                self.data_root,
+            )
             return []
 
         ingestor = self._build_ingestor()
@@ -248,7 +314,11 @@ class LPD5Dataset(MidiDataset):
         if self._max_files is not None:
             files = files[: self._max_files]
 
-        logger.info("LPD5Dataset: scanning %d .npz files in %s", len(files), self.data_root)
+        logger.info(
+            "LPD5Dataset (deprecated): scanning %d .npz files in %s",
+            len(files),
+            self.data_root,
+        )
 
         for file_path in files:
             file_bars = ingestor.ingest_file(file_path)

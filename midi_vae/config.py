@@ -24,7 +24,7 @@ class PathsConfig(BaseModel):
 class DataConfig(BaseModel):
     """Dataset selection and preprocessing parameters."""
 
-    dataset: str = "lpd5"  # lpd5 | pop909 | maestro
+    dataset: str = "lakh"  # lakh | maestro | pop909 | lpd5 (deprecated)
     instruments: list[str] = Field(
         default_factory=lambda: ["drums", "bass", "guitar", "piano", "strings"]
     )
@@ -32,6 +32,7 @@ class DataConfig(BaseModel):
     min_notes_per_bar: int = 2
     time_steps: int = 96  # 64 | 96 | 128
     target_resolution: tuple[int, int] = (128, 128)
+    max_files: int | None = None  # Limit number of files loaded (for debugging/mini runs)
 
 
 class RenderConfig(BaseModel):

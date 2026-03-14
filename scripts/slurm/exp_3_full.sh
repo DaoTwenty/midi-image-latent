@@ -1,0 +1,58 @@
+#!/bin/bash
+#SBATCH --job-name=exp3-full
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=04:00:00
+#SBATCH --output=/scratch/triana24/midi-image-latent/outputs/logs/exp3_full_%j.log
+#SBATCH --error=/scratch/triana24/midi-image-latent/outputs/logs/exp3_full_%j.log
+
+# Experiment 3 — Channel Strategy Comparison
+# 12 VAEs x 3 channel strategies = 36 conditions
+# Expected runtime: ~2h on H100 MIG (10.5 GB VRAM)
+
+set -euo pipefail
+
+REPO=/scratch/triana24/midi-image-latent
+
+echo "=========================================="
+echo "Job:        $SLURM_JOB_ID"
+echo "Node:       $SLURMD_NODENAME"
+echo "Start:      $(date)"
+echo "Experiment: exp_3_channel_strategy (full)"
+echo "Conditions: 12 VAEs x 3 channel strategies"
+echo "=========================================="
+
+module purge
+module load python/3.11 gcc/12 cuda/12.6 arrow/23.0.1
+
+export HF_HOME="$SCRATCH/.cache/huggingface"
+
+if [[ -f "$REPO/.env" ]]; then
+    while IFS='=' read -r key value; do
+        [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+        value="${value%\"}"
+        value="${value#\"}"
+        value="${value%\'}"
+        value="${value#\'}"
+        export "$key"="$value"
+    done < <(grep -v '^#' "$REPO/.env" | grep '=')
+fi
+
+source "$REPO/.venv/bin/activate"
+
+cd "$REPO"
+
+echo "Python: $(which python)"
+echo "HF_HOME: $HF_HOME"
+echo "CUDA devices: $(python -c 'import torch; print(torch.cuda.device_count(), "GPU(s)")')"
+
+python scripts/run_experiment.py \
+    configs/experiments/exp_3_channel_strategy.yaml \
+    --data-root data/maestro/maestro-v3.0.0 \
+    --sweep-strategies \
+    --log-level INFO
+
+echo "=========================================="
+echo "Done: $(date)"
+echo "=========================================="

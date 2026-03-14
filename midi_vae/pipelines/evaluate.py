@@ -23,6 +23,7 @@ from typing import Any
 from midi_vae.config import ExperimentConfig
 from midi_vae.data.types import BarData, ReconstructedBar
 from midi_vae.metrics.base import MetricsEngine
+import midi_vae.metrics  # noqa: F401 — trigger registration of all metrics
 from midi_vae.pipelines.base import PipelineStage, StageIO, compute_hash
 from midi_vae.registry import ComponentRegistry
 

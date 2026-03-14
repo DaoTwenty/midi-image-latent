@@ -1,0 +1,23 @@
+## Lakh MIDI Dataset configuration
+## Lakh MIDI Dataset (LMD) full version — raw .mid files
+## Download: http://hog.ee.columbia.edu/craffel/lmd/lmd_full.tar.gz
+## Expected at: data/lakh/ (~178K MIDI files)
+
+data:
+  dataset: lakh
+  instruments:
+    - drums
+    - bass
+    - guitar
+    - piano
+    - strings
+  bars_per_instrument: 5000
+  min_notes_per_bar: 2
+  time_steps: 96
+  target_resolution: [128, 128]
+
+render:
+  channel_strategy: velocity_only
+  pitch_axis: height
+  normalize_range: [-1.0, 1.0]
+  resize_method: bilinear

@@ -21,6 +21,7 @@ from typing import Any
 from midi_vae.config import ExperimentConfig
 from midi_vae.data.types import PianoRollImage, ReconstructedBar
 from midi_vae.note_detection.base import NoteDetector
+import midi_vae.note_detection  # noqa: F401 — trigger registration of all detectors
 from midi_vae.pipelines.base import PipelineStage, StageIO, compute_hash
 from midi_vae.registry import ComponentRegistry
 
