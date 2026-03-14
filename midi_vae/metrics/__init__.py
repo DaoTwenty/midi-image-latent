@@ -25,6 +25,21 @@ from midi_vae.metrics.latent_space import (
     LinearProbeInstrumentAccuracy,
     SilhouetteScore,
 )
+from midi_vae.metrics.generative import (
+    SelfSimilarityMatrix,
+    TransitionEntropy,
+    SequenceGrooveConsistency,
+    PitchClassHistogramKL,
+    BarLevelNLL,
+    SequenceCoherence,
+)
+from midi_vae.metrics.conditioning import (
+    ConditioningFidelity,
+    AttributeAccuracy,
+    InterpolationSmoothness,
+    ConditionalPitchAlignment,
+    DisentanglementScore,
+)
 
 __all__ = [
     "Metric",
@@ -58,4 +73,17 @@ __all__ = [
     "LinearProbePitchAccuracy",
     "LinearProbeInstrumentAccuracy",
     "SilhouetteScore",
+    # generative
+    "SelfSimilarityMatrix",
+    "TransitionEntropy",
+    "SequenceGrooveConsistency",
+    "PitchClassHistogramKL",
+    "BarLevelNLL",
+    "SequenceCoherence",
+    # conditioning
+    "ConditioningFidelity",
+    "AttributeAccuracy",
+    "InterpolationSmoothness",
+    "ConditionalPitchAlignment",
+    "DisentanglementScore",
 ]
