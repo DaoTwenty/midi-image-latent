@@ -204,12 +204,20 @@ class ConditioningFidelity(Metric):
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            clf = LogisticRegression(
-                max_iter=self._max_iter,
-                random_state=random_state,
-                solver='lbfgs',
-                multi_class='auto',
-            )
+            try:
+                clf = LogisticRegression(
+                    max_iter=self._max_iter,
+                    random_state=random_state,
+                    solver='lbfgs',
+                    multi_class='auto',
+                )
+            except TypeError:
+                # sklearn >= 1.8 removed multi_class parameter
+                clf = LogisticRegression(
+                    max_iter=self._max_iter,
+                    random_state=random_state,
+                    solver='lbfgs',
+                )
             clf.fit(X[train_idx], y[train_idx])
             acc = float(clf.score(X[test_idx], y[test_idx]))
 
@@ -315,12 +323,20 @@ class AttributeAccuracy(Metric):
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            clf = LogisticRegression(
-                max_iter=self._max_iter,
-                random_state=random_state,
-                solver='lbfgs',
-                multi_class='auto',
-            )
+            try:
+                clf = LogisticRegression(
+                    max_iter=self._max_iter,
+                    random_state=random_state,
+                    solver='lbfgs',
+                    multi_class='auto',
+                )
+            except TypeError:
+                # sklearn >= 1.8 removed multi_class parameter
+                clf = LogisticRegression(
+                    max_iter=self._max_iter,
+                    random_state=random_state,
+                    solver='lbfgs',
+                )
             clf.fit(X[train_idx], y[train_idx])
             return float(clf.score(X[test_idx], y[test_idx]))
 
