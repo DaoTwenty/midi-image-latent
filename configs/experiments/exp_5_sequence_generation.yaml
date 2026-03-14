@@ -1,0 +1,118 @@
+## Experiment 5 — Sequence Generation with Bar Transformer
+## Train a bar-level Transformer over latent sequences, then generate new bars
+## and evaluate musical coherence with generative metrics.
+## Goal: Demonstrate that VAE latents support autoregressive music generation.
+## Stages: Ingest → Render → Encode → PoolLatents → TrainTransformer
+##          → Generate → Decode → Detect → Evaluate
+
+paths:
+  data_root: data/
+  output_root: outputs/exp_5/
+  cache_dir: outputs/exp_5/cache/
+
+data:
+  dataset: lpd5
+  instruments:
+    - drums
+    - bass
+    - guitar
+    - piano
+    - strings
+  bars_per_instrument: 5000
+  min_notes_per_bar: 2
+  time_steps: 96
+  target_resolution: [128, 128]
+
+render:
+  channel_strategy: vos
+  pitch_axis: height
+  normalize_range: [-1.0, 1.0]
+  resize_method: bilinear
+
+vaes:
+  # Best-performing VAE from Exp 1A (placeholder — update after Exp 1A)
+  - model_id: stabilityai/sd-vae-ft-mse
+    name: sd_vae_ft_mse
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+## Two input conditions: raw VAE latents vs best sub-latent from Exp 4C
+sequence_variants:
+  - name: raw_latents
+    use_sublatent: false
+    latent_dim: 1024   # 4 channels × 16 × 16 flattened
+
+  - name: sublatent_64
+    use_sublatent: true
+    sublatent_approach: mlp
+    sublatent_dim: 64
+
+## Bar Transformer architecture
+transformer:
+  ## Latent input projection: project latent_dim → d_model before attention
+  d_model: 256
+  nhead: 8
+  num_encoder_layers: 6
+  num_decoder_layers: 6
+  dim_feedforward: 1024
+  dropout: 0.1
+  max_seq_len: 64       # maximum bar sequence length (in bars)
+  positional_encoding: sinusoidal  # sinusoidal | learned
+
+## Generation parameters
+generation:
+  num_bars: 32          # bars to generate per sample
+  temperature: 1.0
+  top_k: 0             # 0 = disabled
+  top_p: 0.9           # nucleus sampling
+  num_samples: 100     # number of complete sequences to generate
+
+## Sequence Transformer training
+sequence_training:
+  learning_rate: 0.0001
+  warmup_steps: 4000
+  epochs: 100
+  batch_size: 32
+  weight_decay: 0.00001
+  gradient_clip: 1.0
+  patience: 15
+  label_smoothing: 0.1
+
+note_detection:
+  method: global_threshold
+  params:
+    threshold: 0.5
+
+sublatent:
+  enabled: false
+  approach: mlp
+  target_dim: 64
+  training:
+    learning_rate: 0.0001
+    epochs: 100
+    batch_size: 64
+    weight_decay: 0.00001
+    pixel_weight: 1.0
+    onset_weight: 5.0
+    kl_weight: 0.001
+    patience: 10
+
+metrics:
+  - reconstruction
+  - harmony
+  - rhythm
+  - dynamics
+  - generative
+
+tracking:
+  experiment_name: exp_5_sequence_generation
+  wandb_enabled: false
+  wandb_project: midi-image-vae
+  save_reconstructions: true
+  save_latents: true
+  checkpoint_every_n: 500
+
+seed: 42
+device: cuda
+num_workers: 4

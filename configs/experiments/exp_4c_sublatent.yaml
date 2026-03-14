@@ -1,0 +1,91 @@
+## Experiment 4C — Sub-Latent Compression
+## 4 approaches × 5 target dims = 20 conditions per VAE
+## Goal: Train compact sub-latent models that preserve musically useful structure
+##       while dramatically reducing dimensionality.
+## Stages: Ingest → Render → Encode → TrainSubLatent → SubDecode → Detect → Evaluate
+
+paths:
+  data_root: data/
+  output_root: outputs/exp_4c/
+  cache_dir: outputs/exp_4c/cache/
+
+data:
+  dataset: lpd5
+  instruments:
+    - drums
+    - bass
+    - guitar
+    - piano
+    - strings
+  bars_per_instrument: 5000
+  min_notes_per_bar: 2
+  time_steps: 96
+  target_resolution: [128, 128]
+
+render:
+  channel_strategy: vos
+  pitch_axis: height
+  normalize_range: [-1.0, 1.0]
+  resize_method: bilinear
+
+vaes:
+  # Best-performing VAE from Exp 1A (placeholder — update after Exp 1A)
+  - model_id: stabilityai/sd-vae-ft-mse
+    name: sd_vae_ft_mse
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+## Sub-latent sweep: 4 approaches × 5 target dims = 20 conditions
+sublatent_variants:
+  approaches:
+    - pca
+    - mlp
+    - sub_vae
+    - umap
+  target_dims:
+    - 16
+    - 32
+    - 64
+    - 128
+    - 256
+
+note_detection:
+  method: global_threshold
+  params:
+    threshold: 0.5
+
+## Default sub-latent config (pipeline sweeps over sublatent_variants above)
+sublatent:
+  enabled: true
+  approach: pca
+  target_dim: 64
+  training:
+    learning_rate: 0.0001
+    epochs: 200
+    batch_size: 64
+    weight_decay: 0.00001
+    pixel_weight: 1.0
+    onset_weight: 5.0
+    kl_weight: 0.001
+    patience: 15
+
+metrics:
+  - reconstruction
+  - harmony
+  - rhythm
+  - dynamics
+  - latent_space
+  - information
+
+tracking:
+  experiment_name: exp_4c_sublatent
+  wandb_enabled: false
+  wandb_project: midi-image-vae
+  save_reconstructions: true
+  save_latents: true
+  checkpoint_every_n: 500
+
+seed: 42
+device: cuda
+num_workers: 4
