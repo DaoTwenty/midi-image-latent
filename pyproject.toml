@@ -49,7 +49,8 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-x --tb=short -q"
 markers = [
-    "gpu: marks tests that require a CUDA GPU (deferred — skipped by default)",
+    "gpu: marks tests that require a CUDA GPU (skipped when CUDA is unavailable)",
+    "gated: marks tests that require HuggingFace gated model access (skipped unless --run-gated)",
 ]
 
 [tool.ruff]

@@ -406,18 +406,200 @@ class TestSubLatentIntegration:
 # ---------------------------------------------------------------------------
 
 
+def _make_synthetic_image_batch(
+    batch_size: int = 1, height: int = 128, width: int = 128
+) -> torch.Tensor:
+    """Create a synthetic normalized image batch in [-1, 1] for GPU tests.
+
+    Args:
+        batch_size: Number of images.
+        height: Image height in pixels.
+        width: Image width in pixels.
+
+    Returns:
+        Float tensor of shape (B, 3, H, W) with values in [-1, 1].
+    """
+    torch.manual_seed(42)
+    images = torch.rand(batch_size, 3, height, width) * 2.0 - 1.0
+    return images
+
+
+# VAE configs for parametrized tests.
+# Format: (vae_name, dtype, expected_latent_channels, is_gated)
+# expected_latent_channels=None means we trust whatever the model returns
+_WORKING_VAES = [
+    ("sd_vae_ft_mse", "float32", 4, False),
+    ("sdxl_vae", "float32", 4, False),
+    ("eq_vae_ema", "float32", 4, False),
+    ("eq_sdxl_vae", "float32", 4, False),
+    ("sd_v1_4", "float32", 4, False),
+    ("playground_v25", "float32", 4, False),
+    ("cogview4", "bfloat16", 16, False),
+    ("flux2_tiny", "bfloat16", 128, False),  # 128ch, custom loader, scale_factor=16
+]
+
+_GATED_VAES = [
+    ("sd3_medium", "float32", 16, True),
+    ("flux1_dev", "bfloat16", 16, True),
+    ("flux1_kontext", "bfloat16", 16, True),
+    ("flux2_dev", "bfloat16", 32, True),
+]
+
+
 @pytest.mark.gpu
 class TestRealVAEEncodeDecodeGPU:
-    """Real GPU tests — require actual pretrained model weights and CUDA device.
+    """Real GPU tests — require actual pretrained model weights and a CUDA device.
 
-    These tests are deferred until GPU is available.
-    See docs/GPU_DEFERRED_TASKS.md.
+    Run with: pytest tests/test_integration_encode_decode.py -m gpu -v
+    To also run gated models: pytest ... -m "gpu and gated"
     """
 
-    def test_sd_vae_ft_mse_encode_decode(self) -> None:
-        """sd_vae_ft_mse real encode/decode roundtrip on GPU."""
-        pytest.skip("GPU not available — see docs/GPU_DEFERRED_TASKS.md")
+    def _run_encode_decode(
+        self,
+        vae_name: str,
+        dtype: str,
+        expected_latent_channels: int | None,
+    ) -> None:
+        """Helper: load VAE, encode a synthetic image, decode, assert invariants.
 
+        Asserts:
+        - Latent shape is (1, C, H_lat, W_lat) where C matches expected_latent_channels
+          if provided (or any positive C otherwise).
+        - No NaN values in z_mu or reconstruction.
+        - Reconstruction shape is (1, 3, 128, 128).
+
+        Args:
+            vae_name: Registry name of the VAE to load.
+            dtype: ``'float32'`` or ``'bfloat16'``.
+            expected_latent_channels: Expected C, or None to skip channel check.
+        """
+        import gc
+
+        import torch
+
+        from midi_vae.config import VAEConfig
+        from midi_vae.registry import ComponentRegistry
+
+        assert torch.cuda.is_available(), "CUDA device required for GPU tests"
+        device = "cuda"
+
+        cfg = VAEConfig(
+            model_id="",  # concrete wrapper overrides this via class attribute
+            name=vae_name,
+            dtype=dtype,
+            batch_size=1,
+        )
+
+        vae_cls = ComponentRegistry.get("vae", vae_name)
+        vae = vae_cls(config=cfg, device=device)
+        vae.load_model()
+
+        try:
+            images = _make_synthetic_image_batch(batch_size=1).to(device)
+
+            z_mu, z_sigma = vae.encode(images)
+
+            # Shape assertions
+            assert z_mu.ndim == 4, (
+                f"{vae_name}: z_mu should be 4-D, got shape {z_mu.shape}"
+            )
+            assert z_mu.shape[0] == 1, (
+                f"{vae_name}: batch dim mismatch, got {z_mu.shape[0]}"
+            )
+            if expected_latent_channels is not None:
+                assert z_mu.shape[1] == expected_latent_channels, (
+                    f"{vae_name}: expected {expected_latent_channels} latent channels, "
+                    f"got {z_mu.shape[1]}"
+                )
+            else:
+                assert z_mu.shape[1] > 0, (
+                    f"{vae_name}: latent channels must be positive, got {z_mu.shape[1]}"
+                )
+
+            # NaN checks on latents (convert to float32 for isnan)
+            assert not z_mu.float().isnan().any(), (
+                f"{vae_name}: NaN in z_mu"
+            )
+
+            # Decode
+            recon = vae.decode(z_mu)
+
+            # Reconstruction shape: (1, 3, 128, 128)
+            assert recon.shape == (1, 3, 128, 128), (
+                f"{vae_name}: expected recon shape (1, 3, 128, 128), got {recon.shape}"
+            )
+
+            # NaN checks on reconstruction
+            assert not recon.float().isnan().any(), (
+                f"{vae_name}: NaN in reconstruction"
+            )
+
+        finally:
+            # Free GPU memory regardless of test outcome
+            del vae
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    # ------------------------------------------------------------------
+    # Working VAEs (non-gated)
+    # ------------------------------------------------------------------
+
+    def test_sd_vae_ft_mse_encode_decode(self) -> None:
+        """sd_vae_ft_mse: 4-channel float32 encode/decode roundtrip on GPU."""
+        self._run_encode_decode("sd_vae_ft_mse", "float32", 4)
+
+    def test_sdxl_vae_encode_decode(self) -> None:
+        """sdxl_vae: 4-channel float32 encode/decode roundtrip on GPU."""
+        self._run_encode_decode("sdxl_vae", "float32", 4)
+
+    def test_eq_vae_ema_encode_decode(self) -> None:
+        """eq_vae_ema: 4-channel float32 encode/decode roundtrip on GPU."""
+        self._run_encode_decode("eq_vae_ema", "float32", 4)
+
+    def test_eq_sdxl_vae_encode_decode(self) -> None:
+        """eq_sdxl_vae: 4-channel float32 encode/decode roundtrip on GPU."""
+        self._run_encode_decode("eq_sdxl_vae", "float32", 4)
+
+    def test_sd_v1_4_encode_decode(self) -> None:
+        """sd_v1_4: 4-channel float32 encode/decode roundtrip on GPU."""
+        self._run_encode_decode("sd_v1_4", "float32", 4)
+
+    def test_playground_v25_encode_decode(self) -> None:
+        """playground_v25: 4-channel float32 encode/decode roundtrip on GPU."""
+        self._run_encode_decode("playground_v25", "float32", 4)
+
+    def test_cogview4_encode_decode(self) -> None:
+        """cogview4: 16-channel bfloat16 encode/decode roundtrip on GPU."""
+        self._run_encode_decode("cogview4", "bfloat16", 16)
+
+    def test_flux2_tiny_encode_decode(self) -> None:
+        """flux2_tiny: bfloat16 custom AutoModel encode/decode roundtrip on GPU.
+
+        The actual latent channel count is checked from model output (may be
+        128 channels in practice despite registry declaring 16).
+        """
+        self._run_encode_decode("flux2_tiny", "bfloat16", 128)
+
+    # ------------------------------------------------------------------
+    # Gated VAEs (require HF license acceptance)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.gated
+    def test_sd3_medium_encode_decode(self) -> None:
+        """sd3_medium: 16-channel float32 encode/decode roundtrip on GPU (gated)."""
+        self._run_encode_decode("sd3_medium", "float32", 16)
+
+    @pytest.mark.gated
     def test_flux1_dev_encode_decode(self) -> None:
-        """flux1_dev real encode/decode roundtrip on GPU."""
-        pytest.skip("GPU not available — see docs/GPU_DEFERRED_TASKS.md")
+        """flux1_dev: 16-channel bfloat16 encode/decode roundtrip on GPU (gated)."""
+        self._run_encode_decode("flux1_dev", "bfloat16", 16)
+
+    @pytest.mark.gated
+    def test_flux1_kontext_encode_decode(self) -> None:
+        """flux1_kontext: 16-channel bfloat16 encode/decode roundtrip on GPU (gated)."""
+        self._run_encode_decode("flux1_kontext", "bfloat16", 16)
+
+    @pytest.mark.gated
+    def test_flux2_dev_encode_decode(self) -> None:
+        """flux2_dev: 32-channel bfloat16 encode/decode roundtrip on GPU (gated)."""
+        self._run_encode_decode("flux2_dev", "bfloat16", 32)

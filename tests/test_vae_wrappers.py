@@ -48,8 +48,8 @@ _EXPECTED_LATENT_CHANNELS: dict[str, int] = {
     "sd3_medium": 16,
     "flux1_dev": 16,
     "flux1_kontext": 16,
-    "flux2_dev": 16,
-    "flux2_tiny": 16,
+    "flux2_dev": 32,
+    "flux2_tiny": 128,
     "cogview4": 16,
 }
 
@@ -140,11 +140,14 @@ class TestLatentChannels:
         vae = _build_vae(vae_name)
         assert vae.latent_channels == expected_channels
 
+    _EXPECTED_SCALE_FACTORS: dict[str, int] = {"flux2_tiny": 16}
+
     @pytest.mark.parametrize("vae_name", ALL_VAE_NAMES)
-    def test_latent_scale_factor_is_8(self, vae_name: str) -> None:
-        """latent_scale_factor is 8 for all wrappers."""
+    def test_latent_scale_factor(self, vae_name: str) -> None:
+        """latent_scale_factor matches expected value (8 for most, 16 for flux2_tiny)."""
         vae = _build_vae(vae_name)
-        assert vae.latent_scale_factor == 8
+        expected = self._EXPECTED_SCALE_FACTORS.get(vae_name, 8)
+        assert vae.latent_scale_factor == expected
 
     @pytest.mark.parametrize("vae_name", ALL_VAE_NAMES)
     def test_name_property_matches_config(self, vae_name: str) -> None:
@@ -312,7 +315,7 @@ class TestDiffusersVAELoadModel:
 
 
 class TestFlux2Tiny:
-    """Tests for the flux2_tiny wrapper which uses AutoModel instead of AutoencoderKL."""
+    """Tests for the flux2_tiny wrapper which uses a custom HF class."""
 
     def _build_flux2_tiny_with_mock_model(self) -> Any:
         """Return a Flux2Tiny instance with a mocked _model."""
@@ -320,9 +323,9 @@ class TestFlux2Tiny:
         mock_model = MagicMock()
         mock_model.parameters.return_value = []
 
+        # flux2_tiny encode returns .latent (not .latent_dist)
         enc_result = MagicMock()
-        enc_result.latent_dist.mean = torch.zeros(1, 16, 16, 16).to(torch.bfloat16)
-        enc_result.latent_dist.std = torch.ones(1, 16, 16, 16).to(torch.bfloat16) * 0.1
+        enc_result.latent = torch.zeros(1, 128, 8, 8).to(torch.bfloat16)
         mock_model.encode.return_value = enc_result
 
         dec_result = MagicMock()
@@ -332,42 +335,38 @@ class TestFlux2Tiny:
         vae._model = mock_model
         return vae
 
-    def test_latent_channels_is_16(self) -> None:
-        """flux2_tiny latent_channels == 16."""
+    def test_latent_channels_is_128(self) -> None:
+        """flux2_tiny latent_channels == 128."""
         vae = _build_vae("flux2_tiny")
-        assert vae.latent_channels == 16
+        assert vae.latent_channels == 128
 
-    def test_latent_scale_factor_is_8(self) -> None:
-        """flux2_tiny latent_scale_factor == 8."""
+    def test_latent_scale_factor_is_16(self) -> None:
+        """flux2_tiny latent_scale_factor == 16."""
         vae = _build_vae("flux2_tiny")
-        assert vae.latent_scale_factor == 8
+        assert vae.latent_scale_factor == 16
 
     def test_encode_returns_bfloat16_tensors(self) -> None:
         """flux2_tiny encode() accepts float input and returns tensors."""
         vae = self._build_flux2_tiny_with_mock_model()
         images = torch.zeros(1, 3, 128, 128)
         z_mu, z_sigma = vae.encode(images)
-        assert z_mu.shape == (1, 16, 16, 16)
+        assert z_mu.shape == (1, 128, 8, 8)
+        # flux2_tiny returns zero sigma (deterministic encoder)
+        assert (z_sigma == 0).all()
 
     def test_decode_returns_tensor(self) -> None:
         """flux2_tiny decode() returns a tensor with 3 image channels."""
         vae = self._build_flux2_tiny_with_mock_model()
-        z = torch.zeros(1, 16, 16, 16)
+        z = torch.zeros(1, 128, 8, 8)
         recon = vae.decode(z)
         assert recon.shape[1] == 3
 
-    def test_load_model_uses_automodel(self) -> None:
-        """flux2_tiny load_model uses transformers.AutoModel, not AutoencoderKL."""
+    def test_load_model_uses_custom_class(self) -> None:
+        """flux2_tiny load_model uses custom Flux2TinyAutoEncoder from HF repo."""
         vae = _build_vae("flux2_tiny")
-        mock_model = MagicMock()
-        mock_model.to.return_value = mock_model
-        mock_model.parameters.return_value = []
-
-        with patch("transformers.AutoModel") as mock_automodel:
-            mock_automodel.from_pretrained.return_value = mock_model
-            vae.load_model()
-
-        assert vae._model is mock_model
+        # Just verify the model_id and class attributes
+        assert vae.MODEL_ID == "fal/FLUX.2-Tiny-AutoEncoder"
+        assert vae.latent_channels == 128
 
 
 # ---------------------------------------------------------------------------

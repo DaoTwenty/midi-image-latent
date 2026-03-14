@@ -1,23 +1,37 @@
 # GPU-Deferred Tasks
 
-Tasks that require GPU hardware. All codebase implementation is **complete** (517 tests passing). These tasks are about running real models and experiments.
+Tasks that require GPU hardware. All codebase implementation is **complete** (526 tests passing, 12 GPU tests passing).
 
 > **See also**: `docs/GPU_SESSION_GUIDE.md` for detailed execution instructions, VRAM budgets, and troubleshooting tips.
 
 ---
 
-## Phase 1: Validation (Do First)
+## Phase 1: Validation — COMPLETE (12/12 VAEs)
 
 ### 1. VAE Model Weight Downloads & Real Inference
-- **Owner**: CHARLIE
-- **Current state**: All 12 VAE wrappers implemented with correct API shapes. Tests use synthetic tensors and mock the diffusers autoencoder.
-- **Action**: Download weights for all 12 models, run real encode/decode on synthetic 128x128 images, verify latent shapes match spec (4-ch models -> (B,4,16,16), 16-ch models -> (B,16,16,16)).
-- **Watch for**: HuggingFace gated model auth (FLUX, SD3 need license acceptance). `flux2_tiny` uses `transformers.AutoModel` not `diffusers.AutoencoderKL` — may need API adjustments.
+- **Status**: 12/12 COMPLETE
+- **Verified on GPU** (H100 MIG 1g.10gb, 10.5 GB VRAM):
+  - sd_vae_ft_mse (4ch, float32) — latent (B,4,16,16)
+  - sdxl_vae (4ch, float32) — latent (B,4,16,16)
+  - eq_vae_ema (4ch, float32) — latent (B,4,16,16)
+  - eq_sdxl_vae (4ch, float32) — latent (B,4,16,16)
+  - sd_v1_4 (4ch, float32) — latent (B,4,16,16)
+  - playground_v25 (4ch, float32) — latent (B,4,16,16)
+  - sd3_medium (16ch, float32) — latent (B,16,16,16)
+  - flux1_dev (16ch, bfloat16) — latent (B,16,16,16)
+  - flux1_kontext (16ch, bfloat16) — latent (B,16,16,16)
+  - cogview4 (16ch, bfloat16) — latent (B,16,16,16)
+  - flux2_dev (32ch, bfloat16) — latent (B,32,16,16) (expanded from FLUX.1's 16ch)
+  - flux2_tiny (128ch, bfloat16) — latent (B,128,8,8), custom loader, scale_factor=16
+- **Fixes applied**:
+  - `device.py`: `total_mem` -> `total_memory` (PyTorch 2.10 API)
+  - `flux2_tiny`: Complete rewrite — uses custom `Flux2TinyAutoEncoder` from HF repo (not `transformers.AutoModel`), 128 latent channels (not 16), scale_factor=16 (not 8), encode returns `.latent` (deterministic, no distribution)
+  - `flux2_dev`: Corrected from 16 to 32 latent channels (FLUX.2 expanded latent space)
 
 ### 2. Full Encode-Decode Pipeline Integration Test
-- **Owner**: ECHO
-- **Current state**: Integration test at `tests/test_integration_encode_decode.py:409` is marked `@pytest.mark.gpu` and skipped.
-- **Action**: Run `pytest tests/test_integration_encode_decode.py -m gpu -v --tb=long`. Fix any issues.
+- **Status**: COMPLETE
+- 12 GPU tests pass for all VAEs (`pytest tests/test_integration_encode_decode.py -m gpu --run-gated`)
+- Auto-skip infrastructure: `@pytest.mark.gpu` auto-skips on CPU, `@pytest.mark.gated` requires `--run-gated` flag
 
 ---
 
@@ -94,10 +108,10 @@ Tasks that require GPU hardware. All codebase implementation is **complete** (51
 
 ## Completion Checklist
 
-- [ ] PyTorch with CUDA installed in `.venv`
-- [ ] HuggingFace auth configured (gated models)
-- [ ] All 12 VAEs load and produce correct latent shapes
-- [ ] GPU integration test passes
+- [x] PyTorch with CUDA installed in `.venv`
+- [x] HuggingFace auth configured (all licenses accepted)
+- [x] All 12 VAEs load and produce correct latent shapes
+- [x] All 12 GPU integration tests pass
 - [ ] LPD5 dataset downloaded and ingest verified
 - [ ] Exp 1A complete (core research results)
 - [ ] Remaining experiments (1B, 2, 3, 4A-D, 5) run

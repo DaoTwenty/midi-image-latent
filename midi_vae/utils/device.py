@@ -37,6 +37,6 @@ def get_device_info(device: torch.device) -> dict[str, str]:
     if device.type == "cuda":
         idx = device.index or 0
         info["gpu_name"] = torch.cuda.get_device_name(idx)
-        info["gpu_memory_gb"] = f"{torch.cuda.get_device_properties(idx).total_mem / 1e9:.1f}"
+        info["gpu_memory_gb"] = f"{torch.cuda.get_device_properties(idx).total_memory / 1e9:.1f}"
         info["cuda_version"] = torch.version.cuda or "unknown"
     return info

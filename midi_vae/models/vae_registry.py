@@ -342,15 +342,16 @@ class Flux1Kontext(DiffusersVAE):
 
 @ComponentRegistry.register("vae", "flux2_dev")
 class Flux2Dev(DiffusersVAE):
-    """FLUX.2-dev VAE with 16-channel latent space.
+    """FLUX.2-dev VAE with 32-channel latent space.
 
     HF model: black-forest-labs/FLUX.2-dev
-    Latent channels: 16, loaded from subfolder='vae'.
+    Latent channels: 32, loaded from subfolder='vae'.
+    Note: FLUX.2 expanded to 32 channels from FLUX.1's 16.
     """
 
     model_id = "black-forest-labs/FLUX.2-dev"
     subfolder = "vae"
-    _latent_channels = 16
+    _latent_channels = 32
     _latent_scale_factor = 8
 
 
@@ -375,18 +376,19 @@ class CogView4(DiffusersVAE):
 
 @ComponentRegistry.register("vae", "flux2_tiny")
 class Flux2Tiny(FrozenImageVAE):
-    """FLUX.2-Tiny AutoEncoder with bfloat16 and custom loading via AutoModel.
+    """FLUX.2-Tiny AutoEncoder with bfloat16 and custom loading.
 
     HF model: fal/FLUX.2-Tiny-AutoEncoder
-    Latent channels: 16, loaded via AutoModel.from_pretrained with bfloat16.
+    Latent channels: 128, spatial scale factor: 16 (128x128 -> 8x8).
 
-    This model uses a non-standard API that does not follow the diffusers
-    AutoencoderKL encode/decode interface, so it overrides load_model,
-    encode, and decode directly.
+    This model uses a custom ``Flux2TinyAutoEncoder`` class hosted in the
+    HuggingFace repo.  Its encode API returns ``.latent`` (a single tensor)
+    rather than ``.latent_dist``, so there is no stochastic sampling — we
+    return zeros for z_sigma.
     """
 
-    _latent_channels: int = 16
-    _latent_scale_factor: int = 8
+    _latent_channels: int = 128
+    _latent_scale_factor: int = 16
 
     MODEL_ID: str = "fal/FLUX.2-Tiny-AutoEncoder"
 
@@ -401,15 +403,18 @@ class Flux2Tiny(FrozenImageVAE):
         return self._latent_scale_factor
 
     def load_model(self) -> None:
-        """Load the FLUX.2-Tiny AutoEncoder via AutoModel in bfloat16.
+        """Load the FLUX.2-Tiny AutoEncoder via its custom class in bfloat16.
 
-        Always loads in bfloat16 regardless of config.dtype.  All parameters
-        are frozen and the model is placed in eval mode.
+        Downloads the custom ``flux2_tiny_autoencoder.py`` module from the
+        HuggingFace repo and loads the pretrained weights.  Always uses
+        bfloat16 regardless of config.dtype.
 
         Raises:
-            ImportError: If ``transformers`` is not installed.
+            ImportError: If ``huggingface_hub`` or ``diffusers`` is not installed.
         """
-        from transformers import AutoModel  # local import — not all envs have transformers
+        import importlib.util
+
+        from huggingface_hub import hf_hub_download
 
         logger.info(
             "Loading VAE flux2_tiny (model_id=%s, dtype=bfloat16, device=%s)",
@@ -417,7 +422,15 @@ class Flux2Tiny(FrozenImageVAE):
             self.device,
         )
 
-        model = AutoModel.from_pretrained(self.MODEL_ID, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        # Download and import the custom module from the HF repo
+        mod_path = hf_hub_download(self.MODEL_ID, "flux2_tiny_autoencoder.py")
+        spec = importlib.util.spec_from_file_location("flux2_tiny_autoencoder", mod_path)
+        mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+
+        model = mod.Flux2TinyAutoEncoder.from_pretrained(
+            self.MODEL_ID, torch_dtype=torch.bfloat16
+        )
         model = model.to(self.device)
         model.eval()
 
@@ -429,40 +442,38 @@ class Flux2Tiny(FrozenImageVAE):
 
     @torch.no_grad()
     def encode(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encode images to latent mean and standard deviation.
+        """Encode images to latent tensors.
 
-        The FLUX.2-Tiny encoder returns a distribution object.  Processes the
-        batch in chunks of ``config.batch_size`` to bound GPU memory usage.
+        The FLUX.2-Tiny encoder returns a single deterministic latent via
+        ``.latent`` (no distribution).  We return zeros for z_sigma.
 
         Args:
             images: Float tensor, shape (B, 3, H, W), values in [-1, 1].
 
         Returns:
-            Tuple ``(z_mu, z_sigma)`` each of shape (B, 16, H_lat, W_lat).
+            Tuple ``(z_mu, z_sigma)`` each of shape (B, 128, H/16, W/16).
         """
         self.ensure_loaded()
 
         images = images.to(device=self.device, dtype=torch.bfloat16)
         batch_size = self.config.batch_size
         all_mu: list[torch.Tensor] = []
-        all_sigma: list[torch.Tensor] = []
 
         for start in range(0, images.shape[0], batch_size):
             chunk = images[start : start + batch_size]
-            dist = self._model.encode(chunk).latent_dist
-            all_mu.append(dist.mean)
-            all_sigma.append(dist.std)
+            z = self._model.encode(chunk).latent
+            all_mu.append(z)
 
-        return torch.cat(all_mu, dim=0), torch.cat(all_sigma, dim=0)
+        z_mu = torch.cat(all_mu, dim=0)
+        z_sigma = torch.zeros_like(z_mu)
+        return z_mu, z_sigma
 
     @torch.no_grad()
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """Decode latent vectors back to image space.
 
-        Processes the batch in chunks of ``config.batch_size``.
-
         Args:
-            z: Float tensor, shape (B, 16, H_lat, W_lat).
+            z: Float tensor, shape (B, 128, H_lat, W_lat).
 
         Returns:
             Reconstructed images, shape (B, 3, H, W).

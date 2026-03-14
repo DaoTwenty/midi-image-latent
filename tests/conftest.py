@@ -13,6 +13,58 @@ import numpy as np
 import pytest
 import torch
 
+
+# ---------------------------------------------------------------------------
+# Marker auto-skip hooks
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom markers so pytest does not warn about unknown marks."""
+    config.addinivalue_line(
+        "markers",
+        "gpu: marks tests that require a CUDA GPU (auto-skipped when CUDA is unavailable)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "gated: marks tests that require HuggingFace gated model access "
+        "(auto-skipped unless --run-gated is passed)",
+    )
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Add --run-gated CLI flag to opt-in to gated model tests."""
+    parser.addoption(
+        "--run-gated",
+        action="store_true",
+        default=False,
+        help="Run tests that require HuggingFace gated model access.",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Auto-skip gpu and gated tests when the required conditions are not met.
+
+    - ``@pytest.mark.gpu`` tests are skipped when ``torch.cuda.is_available()``
+      returns False.
+    - ``@pytest.mark.gated`` tests are skipped unless ``--run-gated`` is passed.
+    """
+    cuda_available = torch.cuda.is_available()
+    run_gated = config.getoption("--run-gated", default=False)
+
+    skip_gpu = pytest.mark.skip(reason="CUDA GPU not available (pass -m gpu on a GPU node)")
+    skip_gated = pytest.mark.skip(
+        reason="Gated HuggingFace model — run with --run-gated on a credentialled node"
+    )
+
+    for item in items:
+        if "gpu" in item.keywords and not cuda_available:
+            item.add_marker(skip_gpu)
+        if "gated" in item.keywords and not run_gated:
+            item.add_marker(skip_gated)
+
 from midi_vae.data.types import BarData, PianoRollImage, LatentEncoding, ReconstructedBar, MidiNote
 from midi_vae.config import ExperimentConfig, PathsConfig
 from midi_vae.models.vae_wrapper import FrozenImageVAE, VAEConfig
