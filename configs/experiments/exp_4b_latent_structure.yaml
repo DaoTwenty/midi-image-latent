@@ -1,0 +1,106 @@
+## Experiment 4B — Latent Structure Analysis
+## Full dataset z_mu collection, PCA / t-SNE / UMAP visualisation, k-means clustering
+## Goal: Understand how the VAE latent space organises musical content.
+## Stages: Ingest → Render → Encode → LatentAnalysis
+
+paths:
+  data_root: data/
+  output_root: outputs/exp_4b/
+  cache_dir: outputs/exp_4b/cache/
+
+data:
+  dataset: lpd5
+  instruments:
+    - drums
+    - bass
+    - guitar
+    - piano
+    - strings
+  bars_per_instrument: 5000
+  min_notes_per_bar: 2
+  time_steps: 96
+  target_resolution: [128, 128]
+
+render:
+  channel_strategy: vos
+  pitch_axis: height
+  normalize_range: [-1.0, 1.0]
+  resize_method: bilinear
+
+vaes:
+  # Best-performing VAE from Exp 1A (placeholder — update after Exp 1A)
+  - model_id: stabilityai/sd-vae-ft-mse
+    name: sd_vae_ft_mse
+    latent_type: mean
+    dtype: float32
+    batch_size: 32
+
+## Latent manifold analysis parameters
+latent_analysis:
+  enabled: true
+
+  ## PCA: initial high-dim reduction before UMAP/t-SNE
+  n_pca_components: 50
+
+  ## UMAP configuration
+  n_umap_components: 2
+  umap_n_neighbors: 15
+  umap_min_dist: 0.1
+  umap_metric: euclidean
+
+  ## t-SNE configuration (applied to PCA-reduced space)
+  tsne_perplexity: 30
+  tsne_n_iter: 1000
+  tsne_random_state: 42
+
+  ## k-means clustering
+  cluster_k: 20
+  cluster_random_state: 42
+  cluster_n_init: 10
+
+  ## Colour-by options for scatter plots
+  colour_by:
+    - instrument
+    - cluster_label
+    - note_density
+
+  ## Which dimensionality reduction methods to run
+  reduction_methods:
+    - pca_2d
+    - umap
+    - tsne
+
+note_detection:
+  method: global_threshold
+  params:
+    threshold: 0.5
+
+sublatent:
+  enabled: false
+  approach: pca
+  target_dim: 50
+  training:
+    learning_rate: 0.0001
+    epochs: 100
+    batch_size: 64
+    weight_decay: 0.00001
+    pixel_weight: 1.0
+    onset_weight: 5.0
+    kl_weight: 0.001
+    patience: 10
+
+metrics:
+  - latent_space
+  - information
+
+tracking:
+  experiment_name: exp_4b_latent_structure
+  wandb_enabled: false
+  wandb_project: midi-image-vae
+  save_reconstructions: false
+  save_latents: true
+  checkpoint_every_n: 500
+
+seed: 42
+device: cuda
+num_workers: 4
