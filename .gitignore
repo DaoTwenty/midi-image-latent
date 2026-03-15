@@ -43,3 +43,6 @@ htmlcov/
 
 # Environment secrets
 .env
+
+# Data
+data/
