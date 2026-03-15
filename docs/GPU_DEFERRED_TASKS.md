@@ -101,15 +101,17 @@ Tasks that require GPU hardware. All codebase implementation is **complete** (52
 
 ---
 
-## Phase 5: Sweep Executor & Memory Management
+## Phase 5: Sweep Executor & Memory Management — COMPLETE
 
 ### 12. Verify SweepExecutor Memory Cleanup
-- **Owner**: ALPHA
-- **Action**: Ensure `midi_vae/pipelines/sweep.py` calls `del vae; gc.collect(); torch.cuda.empty_cache()` between VAE conditions. If not, add it. Running 12 VAEs sequentially without cleanup will OOM.
+- **Status**: COMPLETE
+- Added `_free_gpu_memory()` in SweepExecutor between every condition (gc.collect + torch.cuda.empty_cache)
+- EncodeStage now passes loaded VAE instances to DecodeStage via `_vae_instances` context key, avoiding double-loading the same model weights per condition
+- Fixed `_make_condition_config` to forward all wandb tracking fields (entity, mode, dir, tags)
 
 ### 13. CLI Entry Point
-- **Owner**: ECHO
-- **Action**: Create `scripts/run_experiment.py` (or `midi_vae/__main__.py`) so experiments can be launched via `python -m midi_vae configs/experiments/exp_1a_vae_comparison.yaml`.
+- **Status**: COMPLETE
+- `scripts/run_experiment.py` handles all experiments with --mini, --dry-run, --sweep-detectors, --sweep-strategies, --resume-from
 
 ---
 
@@ -120,6 +122,10 @@ Tasks that require GPU hardware. All codebase implementation is **complete** (52
 - [x] All 12 VAEs load and produce correct latent shapes
 - [x] All 12 GPU integration tests pass
 - [x] Real dataset (MAESTRO v3) downloaded and full pipeline validated
+- [x] All 3 datasets downloaded (Lakh, MAESTRO, POP909)
+- [x] SweepExecutor memory management between conditions
+- [x] CLI entry point with full sweep support
+- [x] W&B integration (online + offline sync for HPC)
 - [ ] Exp 1A complete (core research results)
 - [ ] Remaining experiments (1B, 2, 3, 4A-D, 5) run
 - [ ] All metrics computed on real data

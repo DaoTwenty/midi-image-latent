@@ -10,6 +10,9 @@ Context inputs:
 Context outputs:
     latents: dict[str, list[LatentEncoding]]
         Keys are VAE short names.  Each list aligns positionally with 'images'.
+    _vae_instances: dict[str, FrozenImageVAE]
+        Loaded VAE instances, passed through context for reuse by DecodeStage.
+        Avoids loading the same VAE model weights twice per condition.
 """
 
 from __future__ import annotations
@@ -52,9 +55,9 @@ class EncodeStage(PipelineStage):
         """Declare that this stage reads 'images' and produces 'latents'.
 
         Returns:
-            StageIO with inputs=("images",) and outputs=("latents",).
+            StageIO with inputs=("images",) and outputs=("latents", "_vae_instances").
         """
-        return StageIO(inputs=("images",), outputs=("latents",))
+        return StageIO(inputs=("images",), outputs=("latents", "_vae_instances"))
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """Encode all images using each configured VAE.
@@ -78,6 +81,7 @@ class EncodeStage(PipelineStage):
             return {"latents": {}}
 
         latents: dict[str, list[LatentEncoding]] = {}
+        vae_instances: dict[str, FrozenImageVAE] = {}
 
         for vae_cfg in vae_cfgs:
             vae_name = vae_cfg.name
@@ -100,13 +104,15 @@ class EncodeStage(PipelineStage):
                 vae, images, vae_cfg.batch_size, vae_cfg.latent_type
             )
             latents[vae_name] = encodings
+            # Keep the loaded VAE so DecodeStage can reuse it
+            vae_instances[vae_name] = vae
             logger.info(
                 "EncodeStage: produced %d encodings for VAE '%s'",
                 len(encodings),
                 vae_name,
             )
 
-        return {"latents": latents}
+        return {"latents": latents, "_vae_instances": vae_instances}
 
     def _encode_with_vae(
         self,

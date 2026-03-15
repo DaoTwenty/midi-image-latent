@@ -14,6 +14,7 @@ Typical usage
 
 from __future__ import annotations
 
+import gc
 import itertools
 import logging
 from copy import deepcopy
@@ -193,9 +194,29 @@ class SweepExecutor:
 
             all_results[condition.label] = context
 
+            # Free GPU memory between conditions to prevent OOM when
+            # sweeping across multiple VAEs sequentially.
+            self._free_gpu_memory()
+
         all_results["__summary__"] = aggregated_summary
         logger.info("SweepExecutor: all conditions complete")
         return all_results
+
+    @staticmethod
+    def _free_gpu_memory() -> None:
+        """Release cached GPU memory between sweep conditions.
+
+        Calls gc.collect() to trigger Python garbage collection of any
+        lingering VAE model objects, then clears the PyTorch CUDA cache.
+        Safe to call on CPU-only machines.
+        """
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
 
     # ------------------------------------------------------------------
     # Helpers
@@ -238,6 +259,10 @@ class SweepExecutor:
             experiment_name=f"{base.tracking.experiment_name}__cond{index:04d}__{safe_label}",
             wandb_enabled=base.tracking.wandb_enabled,
             wandb_project=base.tracking.wandb_project,
+            wandb_entity=base.tracking.wandb_entity,
+            wandb_mode=base.tracking.wandb_mode,
+            wandb_dir=base.tracking.wandb_dir,
+            wandb_tags=list(base.tracking.wandb_tags),
             save_reconstructions=base.tracking.save_reconstructions,
             save_latents=base.tracking.save_latents,
             checkpoint_every_n=base.tracking.checkpoint_every_n,

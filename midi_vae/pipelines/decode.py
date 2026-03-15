@@ -6,6 +6,7 @@ a dict of reconstructed image tensors under "recon_images".
 
 Context inputs:
     latents: dict[str, list[LatentEncoding]]
+    _vae_instances: dict[str, FrozenImageVAE]  (optional, from EncodeStage)
 
 Context outputs:
     recon_images: dict[str, list[tuple[str, torch.Tensor]]]
@@ -35,8 +36,9 @@ class DecodeStage(PipelineStage):
     """Pipeline stage that decodes latent encodings back to image tensors.
 
     For each VAE that appears in the "latents" context dict, the corresponding
-    VAE is loaded from the registry and used to decode the stored latent vectors.
-    The decoding uses z_mu by default (deterministic).
+    VAE is reused from the "_vae_instances" context (if available from EncodeStage)
+    or loaded fresh from the registry.  This avoids loading the same multi-GB
+    model weights twice per condition.  Decoding uses z_mu by default (deterministic).
 
     Args:
         config: Full experiment configuration.
@@ -72,6 +74,9 @@ class DecodeStage(PipelineStage):
 
         recon_images: dict[str, list[tuple[str, torch.Tensor]]] = {}
 
+        # Reuse VAE instances from EncodeStage if available (avoids double-loading)
+        vae_instances: dict[str, FrozenImageVAE] = context.get("_vae_instances", {})
+
         # Build a lookup from vae_name -> VAEConfig
         vae_cfg_by_name = {v.name: v for v in self.config.vaes}
 
@@ -79,21 +84,28 @@ class DecodeStage(PipelineStage):
             if not encodings:
                 continue
 
-            vae_cfg = vae_cfg_by_name.get(vae_name)
-            if vae_cfg is None:
-                logger.warning(
-                    "DecodeStage: no VAEConfig found for '%s' — skipping", vae_name
+            # Try to reuse VAE from EncodeStage; fall back to fresh load
+            vae = vae_instances.get(vae_name)
+            if vae is not None:
+                logger.info(
+                    "DecodeStage: reusing VAE '%s' from EncodeStage", vae_name
                 )
-                continue
+            else:
+                vae_cfg = vae_cfg_by_name.get(vae_name)
+                if vae_cfg is None:
+                    logger.warning(
+                        "DecodeStage: no VAEConfig found for '%s' — skipping", vae_name
+                    )
+                    continue
 
-            try:
-                vae_cls = ComponentRegistry.get("vae", vae_name)
-                vae: FrozenImageVAE = vae_cls(vae_cfg, device=self.config.device)
-            except KeyError:
-                logger.error(
-                    "DecodeStage: VAE '%s' not registered — skipping", vae_name
-                )
-                continue
+                try:
+                    vae_cls = ComponentRegistry.get("vae", vae_name)
+                    vae = vae_cls(vae_cfg, device=self.config.device)
+                except KeyError:
+                    logger.error(
+                        "DecodeStage: VAE '%s' not registered — skipping", vae_name
+                    )
+                    continue
 
             logger.info(
                 "DecodeStage: decoding %d latents with VAE '%s'",
