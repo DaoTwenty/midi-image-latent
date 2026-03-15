@@ -24,7 +24,7 @@ class PathsConfig(BaseModel):
 class DataConfig(BaseModel):
     """Dataset selection and preprocessing parameters."""
 
-    dataset: str = "lakh"  # lakh | maestro | pop909 | lpd5 (deprecated)
+    dataset: str = "lakh"  # lakh | maestro | pop909
     instruments: list[str] = Field(
         default_factory=lambda: ["drums", "bass", "guitar", "piano", "strings"]
     )

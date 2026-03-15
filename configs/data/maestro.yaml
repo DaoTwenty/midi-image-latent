@@ -1,6 +1,8 @@
 ## MAESTRO dataset configuration
 ## MIDI and Audio Edited for Synchronous TRacks and Organization
 ## Classical piano performances in MIDI format
+## Download: bash scripts/download_data.sh maestro
+## Expected at: data/maestro/maestro-v3.0.0/ (1276 .midi files, 84 MB)
 
 data:
   dataset: maestro

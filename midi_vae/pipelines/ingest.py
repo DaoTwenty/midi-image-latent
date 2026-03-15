@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 # Map dataset name to glob pattern for the raw files
 _DATASET_GLOB: dict[str, str] = {
     "lakh": "**/*.mid",
-    "lpd5": "**/*.npz",  # deprecated — kept for backwards compat with local .npz files
     "pop909": "**/*.mid",
     "maestro": "**/*.midi",
 }
@@ -34,7 +33,7 @@ class IngestStage(PipelineStage):
     """Pipeline stage that loads raw MIDI files and extracts BarData objects.
 
     Reads MIDI files from config.paths.data_root using the configured
-    dataset type (lpd5 | pop909 | maestro).  All valid bars are collected
+    dataset type (lakh | pop909 | maestro).  All valid bars are collected
     and stored under the context key 'bars'.
 
     Args:

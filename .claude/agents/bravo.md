@@ -17,10 +17,10 @@ Build MIDI preprocessing, 3 channel strategies, transform pipeline, dataset clas
 - `midi_vae/data/preprocessing.py` — MidiPreprocessor (parse, segment, filter, sample)
 - `midi_vae/data/rendering.py` — ChannelStrategy ABC + 3 implementations (velocity_only, vo_split, vos)
 - `midi_vae/data/transforms.py` — ResizeTensor, NormalizeRange, PitchAxisFlip, PadToSquare
-- `midi_vae/data/datasets.py` — LPD5Dataset, Pop909Dataset, MaestroDataset (torch Datasets)
+- `midi_vae/data/datasets.py` — LakhDataset, Pop909Dataset, MaestroDataset (torch Datasets)
 - `midi_vae/pipelines/ingest.py` — IngestStage
 - `midi_vae/pipelines/render.py` — RenderStage
-- `configs/data/lpd5.yaml`, `configs/data/pop909.yaml`, `configs/data/maestro.yaml`
+- `configs/data/lakh.yaml`, `configs/data/pop909.yaml`, `configs/data/maestro.yaml`
 - `scripts/preprocess_dataset.py`
 
 ## Files You Must NOT Modify

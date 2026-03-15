@@ -174,9 +174,9 @@ class TestBarData:
             sustain_mask=np.zeros((128, 96), dtype=np.float32),
             tempo=120.0,
             time_signature=(4, 4),
-            metadata={"source": "lpd5", "bar": 42},
+            metadata={"source": "lakh", "bar": 42},
         )
-        assert bar.metadata["source"] == "lpd5"
+        assert bar.metadata["source"] == "lakh"
         assert bar.metadata["bar"] == 42
 
     def test_bar_id_format(self) -> None:

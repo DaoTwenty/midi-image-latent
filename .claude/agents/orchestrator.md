@@ -33,7 +33,7 @@ The project proceeds through sprints. You track which sprint we're in and what's
 - CRITICAL: ALPHA must finish before anyone else starts Sprint 1
 
 **Sprint 1** — Parallel Build (BRAVO + CHARLIE + DELTA + ECHO)
-- BRAVO: 3 channel strategies, transforms, preprocessing, LPD5Dataset
+- BRAVO: 3 channel strategies, transforms, preprocessing, LakhDataset
 - CHARLIE: DiffusersVAE base + first 6 VAE wrappers
 - DELTA: GlobalThreshold, OnsetF1, PixelMSE, SSIM, PSNR, NoteDensityPearson
 - ECHO: Unit tests for rendering, detection, metrics; integration test stubs

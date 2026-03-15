@@ -1,12 +1,16 @@
 ## POP909 dataset configuration
-## 909 pop songs with MIDI annotations (.mid files)
+## 909 pop songs with melody, bridge, and accompaniment tracks (.mid files)
+## Download: bash scripts/download_data.sh pop909
+## Expected at: data/pop909/ (~2898 .mid files across 909 numbered directories)
+##
+## Note: POP909 tracks are labelled MELODY, BRIDGE, PIANO but all use
+## MIDI program 0, so they all map to the "piano" instrument category.
+## Most songs are in 2/4 time — the ingestor handles this automatically.
 
 data:
   dataset: pop909
   instruments:
     - piano
-    - strings
-    - guitar
   bars_per_instrument: 5000
   min_notes_per_bar: 2
   time_steps: 96

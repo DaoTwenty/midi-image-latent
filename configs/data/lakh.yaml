@@ -1,7 +1,7 @@
 ## Lakh MIDI Dataset configuration
-## Lakh MIDI Dataset (LMD) full version — raw .mid files
-## Download: http://hog.ee.columbia.edu/craffel/lmd/lmd_full.tar.gz
-## Expected at: data/lakh/ (~178K MIDI files)
+## Lakh MIDI Dataset (LMD full version) — raw .mid files
+## Download: bash scripts/download_data.sh lakh
+## Expected at: data/lakh/ (~178K MIDI files, 5.8 GB extracted)
 
 data:
   dataset: lakh

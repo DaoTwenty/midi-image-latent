@@ -40,17 +40,33 @@ cp .env.example .env
 ### 3. Download Data
 
 ```bash
-bash scripts/download_data.sh
+bash scripts/download_data.sh            # all three datasets
+bash scripts/download_data.sh lakh       # Lakh MIDI (~1.7 GB, 178K .mid files)
+bash scripts/download_data.sh maestro    # MAESTRO v3 (~58 MB, 1276 .midi files)
+bash scripts/download_data.sh pop909     # POP909 (~20 MB, 909 songs)
 ```
-
-This downloads and extracts the MAESTRO v3 dataset into `data/maestro/`.
 
 ### 4. Preprocess
 
 ```bash
+# Preprocess MAESTRO (piano only, classical)
 python scripts/preprocess_dataset.py \
+    --config configs/base.yaml configs/data/maestro.yaml \
     --data-root data/maestro/maestro-v3.0.0 \
     --output-dir outputs/cache/maestro
+
+# Preprocess Lakh (multi-instrument, 178K songs)
+python scripts/preprocess_dataset.py \
+    --config configs/base.yaml configs/data/lakh.yaml \
+    --data-root data/lakh \
+    --output-dir outputs/cache/lakh \
+    --max-files 1000
+
+# Preprocess POP909 (pop songs, piano/melody/bridge)
+python scripts/preprocess_dataset.py \
+    --config configs/base.yaml configs/data/pop909.yaml \
+    --data-root data/pop909 \
+    --output-dir outputs/cache/pop909
 ```
 
 ### 5. Run an Experiment

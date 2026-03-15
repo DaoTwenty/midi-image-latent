@@ -184,23 +184,16 @@ This is the core experiment: 12 VAEs x 5 instruments x 3 channel strategies.
 .venv/bin/python -m midi_vae.pipelines.sweep configs/experiments/exp_1a_vae_comparison.yaml
 ```
 
-**But first, you need data.** The LPD5 dataset must be downloaded:
-- Source: https://salu133445.github.io/lakh-pianoroll-dataset/
-- The `lpd_5_cleansed.tar.gz` file (~3.3 GB compressed, ~9 GB extracted)
-- Extract to `data/lpd5/` (matching `paths.data_root` in the YAML)
-- Structure should be: `data/lpd5/lpd_5_cleansed/<artist>/<title>/<hash>.npz`
-
-**Tip**: For initial validation, you can create a tiny subset:
+**But first, you need data.** Download with the provided script:
 ```bash
-# Copy just 20 songs to test the pipeline before running the full dataset
-mkdir -p data/lpd5_mini/lpd_5_cleansed
-find data/lpd5/lpd_5_cleansed -name "*.npz" | head -20 | while read f; do
-  dir=$(dirname "$f" | sed "s|lpd5|lpd5_mini|")
-  mkdir -p "$dir"
-  cp "$f" "$dir/"
-done
-# Then set data_root: data/lpd5_mini/ in a test config
+bash scripts/download_data.sh          # all three datasets
+bash scripts/download_data.sh maestro  # just MAESTRO v3
+bash scripts/download_data.sh lakh     # just Lakh MIDI (~1.7 GB)
+bash scripts/download_data.sh pop909   # just POP909 (~20 MB)
 ```
+
+**Tip**: For initial validation, use the ``--mini`` flag with ``run_experiment.py``
+to test with 2 VAEs and 20 bars before running the full dataset.
 
 ### Phase 5: Remaining Experiments (Order of Dependencies)
 

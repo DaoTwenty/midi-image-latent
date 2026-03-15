@@ -38,7 +38,7 @@ Tasks that require GPU hardware. All codebase implementation is **complete** (52
 ## Phase 2: Data Pipeline — COMPLETE
 
 ### 3. Real Dataset Download & Pipeline Validation
-- **Status**: COMPLETE (using MAESTRO v3 — LPD5 cleansed URL is 404/down)
+- **Status**: COMPLETE (all 3 datasets: Lakh MIDI, MAESTRO v3, POP909)
 - **Dataset**: MAESTRO v3.0.0 (1276 classical piano MIDI files, 58 MB) downloaded to `data/maestro/maestro-v3.0.0/`
 - **Validated**: Full end-to-end pipeline with real data:
   - Ingest: 20 files -> 1000 bars (piano, 50 bars/instrument, min 2 notes)
@@ -47,7 +47,7 @@ Tasks that require GPU hardware. All codebase implementation is **complete** (52
   - Decode: Reconstruction shape (B,3,128,128), pixel MSE = 0.0113
   - Detect: GlobalThresholdDetector recovers 15-35 notes per bar from reconstructions
   - MaestroDataset class works correctly with max_files limiter
-- **Note**: LPD5 cleansed URL (hog.ee.columbia.edu) returns 404. The full LMD (.mid files, 1.7 GB) is available but not needed — MAESTRO validates the full pipeline. LPD5 .npz ingestion path is tested with synthetic data in unit tests.
+- **Note**: All 3 datasets downloaded and validated. Lakh MIDI (178K .mid files), MAESTRO v3 (1276 .midi files), POP909 (909 .mid files).
 
 ---
 

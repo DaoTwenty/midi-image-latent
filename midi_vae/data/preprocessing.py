@@ -3,7 +3,7 @@
 The MidiIngestor class is the entry point for turning raw MIDI files into
 BarData objects consumable by the rendering pipeline.  It handles:
 
-  - Loading MIDI files via pypianoroll (LPD5 .npz) or pretty_midi (.mid).
+  - Loading MIDI files via pypianoroll (.npz) or pretty_midi (.mid/.midi).
   - Segmenting multi-track pianorolls into fixed-length bar arrays.
   - Computing onset and sustain masks from the velocity matrix.
   - Filtering out empty or sparse bars.
@@ -36,11 +36,11 @@ logger = logging.getLogger(__name__)
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-# LPD-5 instrument order inside the 5-track pianoroll arrays
-LPD5_INSTRUMENTS: list[str] = ["drums", "piano", "guitar", "bass", "strings"]
+# Default 5-track instrument order for multi-track pianoroll .npz files
+MULTITRACK_INSTRUMENTS: list[str] = ["drums", "piano", "guitar", "bass", "strings"]
 
-# Resolution of one beat in pianoroll steps for LPD5 (24 steps per beat)
-LPD5_BEAT_RESOLUTION: int = 24
+# Default beat resolution in pianoroll steps (24 steps per beat)
+DEFAULT_BEAT_RESOLUTION: int = 24
 
 # Default time signature we accept — everything else is skipped
 ACCEPTED_TIME_SIG: tuple[int, int] = (4, 4)
@@ -133,8 +133,8 @@ def _segment_track(
 class MidiIngestor:
     """Load and segment MIDI data into BarData objects.
 
-    Supports both the LPD-5 .npz multi-track format (via pypianoroll) and
-    plain .mid files (via pretty_midi).
+    Supports both the pypianoroll .npz multi-track format and plain
+    .mid/.midi files (via pretty_midi).
 
     Args:
         time_steps: Number of pianoroll time steps per bar.
@@ -154,7 +154,7 @@ class MidiIngestor:
         self,
         time_steps: int = 96,
         min_notes_per_bar: int = 2,
-        beat_resolution: int = LPD5_BEAT_RESOLUTION,
+        beat_resolution: int = DEFAULT_BEAT_RESOLUTION,
         accepted_time_sig: tuple[int, int] = ACCEPTED_TIME_SIG,
         instruments: list[str] | None = None,
         bars_per_instrument: int | None = None,
@@ -175,7 +175,7 @@ class MidiIngestor:
         """Load a MIDI file and extract all valid BarData objects.
 
         Args:
-            path: Path to a .npz (LPD5 pypianoroll) or .mid file.
+            path: Path to a .npz (pypianoroll) or .mid/.midi file.
 
         Returns:
             List of BarData objects.  May be empty if the file is corrupted,
@@ -186,7 +186,7 @@ class MidiIngestor:
 
         try:
             if suffix == ".npz":
-                return self._ingest_lpd5(path)
+                return self._ingest_npz(path)
             elif suffix in {".mid", ".midi"}:
                 return self._ingest_midi(path)
             else:
@@ -223,13 +223,13 @@ class MidiIngestor:
             bars = self.ingest_file(file_path)
             yield from bars
 
-    # ── LPD5 (pypianoroll .npz) ───────────────────────────────────────────────
+    # ── pypianoroll .npz ────────────────────────────────────────────────────────
 
-    def _ingest_lpd5(self, path: Path) -> list[BarData]:
-        """Load an LPD5 .npz file and extract bar data for each track.
+    def _ingest_npz(self, path: Path) -> list[BarData]:
+        """Load a pypianoroll .npz file and extract bar data for each track.
 
         Args:
-            path: Path to the LPD5 .npz file.
+            path: Path to the pypianoroll .npz file.
 
         Returns:
             List of BarData objects.
@@ -238,7 +238,7 @@ class MidiIngestor:
             import pypianoroll
         except ImportError as exc:
             raise ImportError(
-                "pypianoroll is required for LPD5 ingestion. "
+                "pypianoroll is required for .npz ingestion. "
                 "Install it with: pip install pypianoroll"
             ) from exc
 
@@ -250,7 +250,7 @@ class MidiIngestor:
         song_id = path.stem
 
         # Determine steps per bar from beat resolution and time signature
-        # LPD5 is always 4/4 at 24 steps/beat → 96 steps/bar
+        # Assume 4/4 at default beat resolution → 96 steps/bar
         time_sig_num, time_sig_den = self.accepted_time_sig
         steps_per_bar = int(self.beat_resolution * 4 * time_sig_num / time_sig_den)
 
@@ -267,7 +267,7 @@ class MidiIngestor:
         all_bars: list[BarData] = []
 
         for track_idx, track in enumerate(multitrack.tracks):
-            instrument_name = self._lpd5_instrument_name(track_idx, track)
+            instrument_name = self._npz_instrument_name(track_idx, track)
 
             if self.instruments is not None and instrument_name not in self.instruments:
                 continue
@@ -303,8 +303,8 @@ class MidiIngestor:
 
         return all_bars
 
-    def _lpd5_instrument_name(self, track_idx: int, track: object) -> str:
-        """Determine the instrument name for an LPD5 track.
+    def _npz_instrument_name(self, track_idx: int, track: object) -> str:
+        """Determine the instrument name for a multi-track .npz pianoroll.
 
         Args:
             track_idx: Zero-based track index within the multitrack.
@@ -313,8 +313,8 @@ class MidiIngestor:
         Returns:
             Instrument name string.
         """
-        if track_idx < len(LPD5_INSTRUMENTS):
-            return LPD5_INSTRUMENTS[track_idx]
+        if track_idx < len(MULTITRACK_INSTRUMENTS):
+            return MULTITRACK_INSTRUMENTS[track_idx]
         # Fall back to the track's program name if available
         return getattr(track, "name", f"instrument_{track_idx}").lower().replace(" ", "_")
 
@@ -359,14 +359,15 @@ class MidiIngestor:
         pm = pretty_midi.PrettyMIDI(str(path))
         song_id = path.stem
 
-        # Check time signature
-        if not self._check_time_signature_midi(pm):
-            logger.debug("Song %s has non-4/4 time signature, skipping", song_id)
+        # Detect the dominant time signature
+        time_sig = self._detect_time_signature_midi(pm)
+        if time_sig is None:
+            logger.debug("Song %s has unsupported time signature, skipping", song_id)
             return []
 
         tempo = self._get_tempo_midi(pm)
         steps_per_beat = self.beat_resolution
-        beats_per_bar = self.accepted_time_sig[0]
+        beats_per_bar = time_sig[0]
         steps_per_bar = steps_per_beat * beats_per_bar
         fs = steps_per_beat * (tempo / 60.0)  # steps per second
 
@@ -399,29 +400,44 @@ class MidiIngestor:
                 instrument=instrument_name,
                 program_number=instrument.program,
                 tempo=tempo,
-                time_signature=self.accepted_time_sig,
+                time_signature=time_sig,
             )
             all_bars.extend(bars)
 
         return all_bars
 
     @staticmethod
-    def _check_time_signature_midi(pm: object) -> bool:
-        """Return True if the MIDI file is in 4/4 throughout.
+    def _detect_time_signature_midi(pm: object) -> tuple[int, int] | None:
+        """Detect the dominant time signature from a MIDI file.
+
+        Accepts common simple time signatures (2/4, 3/4, 4/4, 6/8).
+        Files with only unusual signatures (5/4, 7/8, etc.) return None.
 
         Args:
             pm: pretty_midi.PrettyMIDI object.
 
         Returns:
-            True if all time signature changes are 4/4, False otherwise.
+            (numerator, denominator) of the dominant time signature,
+            or None if unsupported.
         """
+        SUPPORTED = {(2, 4), (3, 4), (4, 4), (6, 8)}
+
         time_sigs = getattr(pm, "time_signature_changes", [])
         if not time_sigs:
-            return True  # Assume 4/4 if none specified
+            return (4, 4)  # Assume 4/4 if none specified
+
+        # Use the first (or most common) time signature
+        first_ts = (time_sigs[0].numerator, time_sigs[0].denominator)
+        if first_ts in SUPPORTED:
+            return first_ts
+
+        # If the first is unsupported, check if any supported one exists
         for ts in time_sigs:
-            if ts.numerator != 4 or ts.denominator != 4:
-                return False
-        return True
+            candidate = (ts.numerator, ts.denominator)
+            if candidate in SUPPORTED:
+                return candidate
+
+        return None
 
     @staticmethod
     def _get_tempo_midi(pm: object) -> float:

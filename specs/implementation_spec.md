@@ -12,7 +12,7 @@ class PathsConfig(BaseModel):
     cache_dir: str = 'outputs/cache'
 
 class DataConfig(BaseModel):
-    dataset: str = 'lpd5'           # lpd5 | pop909 | maestro
+    dataset: str = 'lakh'           # lakh | pop909 | maestro
     instruments: list[str] = ['drums','bass','guitar','piano','strings']
     bars_per_instrument: int = 5000
     min_notes_per_bar: int = 2

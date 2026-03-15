@@ -41,7 +41,7 @@ midi_vae/              # Core library package
     preprocessing.py   # MIDI ingest, bar segmentation
     rendering.py       # ChannelStrategy implementations (velocity_only, vo_split, vos)
     transforms.py      # Resize, normalize, pad transforms
-    datasets.py        # LPD5Dataset, Pop909Dataset, MaestroDataset
+    datasets.py        # LakhDataset, Pop909Dataset, MaestroDataset
   models/
     vae_wrapper.py     # FrozenImageVAE ABC
     vae_registry.py    # 12 concrete VAE wrappers

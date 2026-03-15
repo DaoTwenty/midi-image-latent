@@ -3,8 +3,8 @@
 Usage::
 
     python scripts/preprocess_dataset.py \\
-        --config configs/base.yaml configs/data/lpd5.yaml \\
-        --data-root /path/to/lpd5 \\
+        --config configs/base.yaml configs/data/lakh.yaml \\
+        --data-root data/lakh \\
         --output-dir outputs/bars \\
         [--max-files N] \\
         [--save-hdf5] \\

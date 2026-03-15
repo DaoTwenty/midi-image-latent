@@ -32,8 +32,8 @@ from midi_vae.data.transforms import (
 from midi_vae.data.preprocessing import MidiIngestor
 
 # Datasets import rendering and preprocessing (already loaded above) — safe.
-# Importing triggers @ComponentRegistry.register decorators for lpd5, pop909, maestro.
-from midi_vae.data.datasets import LPD5Dataset, Pop909Dataset, MaestroDataset
+# Importing triggers @ComponentRegistry.register decorators for lakh, pop909, maestro.
+from midi_vae.data.datasets import LakhDataset, Pop909Dataset, MaestroDataset
 
 __all__ = [
     # Types
@@ -57,7 +57,7 @@ __all__ = [
     # Preprocessing
     "MidiIngestor",
     # Datasets
-    "LPD5Dataset",
+    "LakhDataset",
     "Pop909Dataset",
     "MaestroDataset",
 ]
