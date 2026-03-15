@@ -30,6 +30,10 @@ class ExperimentTracker:
             figures/
             logs/
             jobs/
+
+    If ``config.tracking.wandb_enabled`` is True, a ``WandbLogger`` is
+    initialized alongside the local file logger.  The wandb mode (online
+    vs offline) is controlled by ``config.tracking.wandb_mode``.
     """
 
     def __init__(self, config: ExperimentConfig) -> None:
@@ -52,6 +56,12 @@ class ExperimentTracker:
         # Save config and environment
         self._save_config()
         self._save_environment()
+
+        # Initialize wandb (if enabled)
+        self._wandb: Any = None
+        if config.tracking.wandb_enabled:
+            from midi_vae.tracking.wandb_logger import WandbLogger
+            self._wandb = WandbLogger(config, self.experiment_id)
 
     def _generate_id(self, name: str) -> str:
         """Generate a unique experiment ID.
@@ -101,7 +111,7 @@ class ExperimentTracker:
         save_json(env_info, self.experiment_dir / "environment.json")
 
     def log_metrics(self, metrics: dict[str, float], step: int | None = None, tag: str = "eval") -> None:
-        """Log metrics to disk.
+        """Log metrics to disk and wandb (if enabled).
 
         Args:
             metrics: Dict of metric name -> value.
@@ -111,8 +121,13 @@ class ExperimentTracker:
         filename = f"{tag}_step{step}.json" if step is not None else f"{tag}.json"
         save_json(metrics, self.metrics_dir / filename)
 
+        # Forward to wandb with tag prefix
+        if self._wandb is not None and self._wandb.enabled:
+            prefixed = {f"{tag}/{k}": v for k, v in metrics.items()}
+            self._wandb.log_metrics(prefixed, step=step)
+
     def save_artifact(self, data: Any, name: str) -> Path:
-        """Save an artifact to the artifacts directory.
+        """Save an artifact to the artifacts directory (and wandb if enabled).
 
         Args:
             data: Data to save (if dict/list, saved as JSON; if Tensor, saved as .pt).
@@ -129,10 +144,15 @@ class ExperimentTracker:
         else:
             with open(path, "w") as f:
                 f.write(str(data))
+
+        # Log to wandb as artifact
+        if self._wandb is not None and self._wandb.enabled:
+            self._wandb.log_artifact(path, name=name)
+
         return path
 
     def log_figure(self, fig: Any, name: str) -> Path:
-        """Save a matplotlib figure.
+        """Save a matplotlib figure (and log to wandb if enabled).
 
         Args:
             fig: Matplotlib figure object.
@@ -143,4 +163,42 @@ class ExperimentTracker:
         """
         path = self.figures_dir / name
         fig.savefig(path, dpi=150, bbox_inches="tight")
+
+        # Log to wandb
+        if self._wandb is not None and self._wandb.enabled:
+            try:
+                import wandb
+                self._wandb.run.log({name: wandb.Image(str(path))})
+            except Exception:
+                pass  # non-critical
+
         return path
+
+    def log_summary(self, summary: dict[str, Any]) -> None:
+        """Log final summary metrics (shown in wandb dashboard overview).
+
+        Args:
+            summary: Dict of summary key -> value.
+        """
+        # Save locally
+        save_json(summary, self.metrics_dir / "summary.json")
+
+        # Forward to wandb
+        if self._wandb is not None and self._wandb.enabled:
+            self._wandb.log_summary(summary)
+
+    def finish(self) -> None:
+        """Finalize the experiment: close wandb run, write completion marker.
+
+        For offline wandb mode, prints the sync command to use from a login node.
+        """
+        # Write completion marker
+        save_json(
+            {"completed": datetime.now().isoformat(), "experiment_id": self.experiment_id},
+            self.experiment_dir / "completed.json",
+        )
+
+        # Finalize wandb
+        if self._wandb is not None:
+            self._wandb.finish()
+            self._wandb = None

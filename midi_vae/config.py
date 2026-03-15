@@ -99,6 +99,10 @@ class TrackingConfig(BaseModel):
     experiment_name: str = "default"
     wandb_enabled: bool = False
     wandb_project: str = "midi-image-vae"
+    wandb_entity: str | None = None  # wandb team/user; None = personal default
+    wandb_mode: str = "online"  # online | offline | disabled
+    wandb_dir: str | None = None  # directory for offline run data; None = default
+    wandb_tags: list[str] = Field(default_factory=list)
     save_reconstructions: bool = True
     save_latents: bool = True
     checkpoint_every_n: int = 500

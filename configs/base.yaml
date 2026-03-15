@@ -56,8 +56,12 @@ metrics:
 
 tracking:
   experiment_name: default
-  wandb_enabled: false
+  wandb_enabled: true
   wandb_project: midi-image-vae
+  wandb_entity:   # set in .env via WANDB_ENTITY, or leave blank for personal default
+  wandb_mode: offline  # offline for compute nodes; sync later with: bash scripts/wandb_sync.sh
+  wandb_dir: outputs/  # offline run data stored here; scanned by wandb_sync.sh
+  wandb_tags: []
   save_reconstructions: true
   save_latents: true
   checkpoint_every_n: 500

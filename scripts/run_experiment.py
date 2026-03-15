@@ -467,6 +467,17 @@ def main() -> int:
         return 0
 
     # ------------------------------------------------------------------
+    # Initialize wandb (if enabled)
+    # ------------------------------------------------------------------
+    wandb_logger = None
+    if config.tracking.wandb_enabled:
+        from midi_vae.tracking.wandb_logger import WandbLogger
+        wandb_logger = WandbLogger(
+            config=config,
+            experiment_id=config.tracking.experiment_name,
+        )
+
+    # ------------------------------------------------------------------
     # Run sweep
     # ------------------------------------------------------------------
     logger.info(
@@ -488,10 +499,14 @@ def main() -> int:
     except KeyboardInterrupt:
         logger.warning("Sweep interrupted by user.")
         _free_gpu_memory()
+        if wandb_logger:
+            wandb_logger.finish()
         return 130
     except Exception as exc:
         logger.error("Sweep failed", error=str(exc), exc_info=True)
         _free_gpu_memory()
+        if wandb_logger:
+            wandb_logger.finish()
         return 1
 
     elapsed = time.monotonic() - t_start
@@ -514,6 +529,42 @@ def main() -> int:
         logger.info("Summary written", path=str(summary_path))
     except Exception as exc:
         logger.warning("Could not write summary JSON", error=str(exc))
+
+    # ------------------------------------------------------------------
+    # Log to wandb and finalize
+    # ------------------------------------------------------------------
+    if wandb_logger and wandb_logger.enabled:
+        # Log per-condition metrics
+        sweep_summary = results.get("__summary__", {})
+        for label, metrics in sweep_summary.items():
+            wandb_logger.log_metrics(
+                {f"condition/{label}/{k}": v for k, v in metrics.items()},
+            )
+
+        # Log summary table
+        if sweep_summary:
+            # Collect all metric keys
+            all_keys = sorted(
+                set(k for m in sweep_summary.values() for k in m.keys())
+            )
+            columns = ["condition"] + all_keys
+            rows = [
+                [label] + [metrics.get(k, float("nan")) for k in all_keys]
+                for label, metrics in sweep_summary.items()
+            ]
+            wandb_logger.log_table("sweep_results", columns=columns, data=rows)
+
+        # Log final summary
+        wandb_logger.log_summary({
+            "elapsed_seconds": round(elapsed, 2),
+            "num_conditions": len(all_conditions),
+        })
+
+        # Log the JSON summary as artifact
+        if summary_path.exists():
+            wandb_logger.log_artifact(summary_path, name="sweep_summary", artifact_type="result")
+
+        wandb_logger.finish()
 
     return 0
 

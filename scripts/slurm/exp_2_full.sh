@@ -34,6 +34,7 @@ module load python/3.11 gcc/12 cuda/12.6 arrow/23.0.1
 
 export HF_HOME="$SCRATCH/.cache/huggingface"
 
+# Load .env (HF_TOKEN, WANDB_API_KEY, etc.)
 if [[ -f "$REPO/.env" ]]; then
     while IFS='=' read -r key value; do
         [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
@@ -45,12 +46,17 @@ if [[ -f "$REPO/.env" ]]; then
     done < <(grep -v '^#' "$REPO/.env" | grep '=')
 fi
 
+# Wandb: offline on compute nodes (no internet), sync later from login node
+export WANDB_MODE=offline
+export WANDB_DIR="$REPO/outputs"
+
 source "$REPO/.venv/bin/activate"
 
 cd "$REPO"
 
 echo "Python: $(which python)"
 echo "HF_HOME: $HF_HOME"
+echo "WANDB_MODE: $WANDB_MODE"
 echo "CUDA devices: $(python -c 'import torch; print(torch.cuda.device_count(), "GPU(s)")')"
 
 VARIANTS_DIR="$REPO/outputs/exp_2/tmp_variant_configs"
@@ -97,6 +103,9 @@ YAML
         --log-level INFO
 done
 
+echo ""
+echo "[wandb] Offline runs saved. Sync from login node:"
+echo "  bash scripts/wandb_sync.sh"
 echo "=========================================="
 echo "Done: $(date)"
 echo "=========================================="
