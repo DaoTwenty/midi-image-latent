@@ -16,6 +16,7 @@ from typing import Any
 
 from midi_vae.config import ExperimentConfig
 from midi_vae.data.preprocessing import MidiIngestor
+from midi_vae.data.subset import apply_subset
 from midi_vae.data.types import BarData
 from midi_vae.pipelines.base import PipelineStage, StageIO, compute_hash
 
@@ -68,11 +69,16 @@ class IngestStage(PipelineStage):
         data_root = Path(self.config.paths.data_root)
         dataset_name = data_cfg.dataset.lower()
 
-        glob_pattern = _DATASET_GLOB.get(dataset_name, "**/*.mid")
-        if dataset_name not in _DATASET_GLOB:
-            logger.warning(
-                "Unknown dataset '%s'; defaulting glob to '**/*.mid'", dataset_name
-            )
+        # When a custom glob_pattern is specified in SubsetConfig, use it for
+        # initial file discovery instead of the default dataset glob.
+        if data_cfg.subset and data_cfg.subset.glob_pattern:
+            glob_pattern = data_cfg.subset.glob_pattern
+        else:
+            glob_pattern = _DATASET_GLOB.get(dataset_name, "**/*.mid")
+            if dataset_name not in _DATASET_GLOB:
+                logger.warning(
+                    "Unknown dataset '%s'; defaulting glob to '**/*.mid'", dataset_name
+                )
 
         ingestor = MidiIngestor(
             time_steps=data_cfg.time_steps,
@@ -90,6 +96,14 @@ class IngestStage(PipelineStage):
         # MAESTRO uses both .midi and .mid — if primary glob found nothing, try the other
         if not all_files and dataset_name == "maestro":
             all_files = sorted(data_root.glob("**/*.mid"))
+
+        # Apply subset filtering (subdirectory, glob_pattern intersection, file_list, fraction)
+        # before the hard max_files cap so the cap acts on the already-filtered set.
+        if data_cfg.subset is not None:
+            all_files = apply_subset(
+                all_files, data_cfg.subset, data_root, self.config.seed
+            )
+
         if self._max_files is not None:
             all_files = all_files[: self._max_files]
 
@@ -121,6 +135,14 @@ class IngestStage(PipelineStage):
         if not data_root.exists():
             return None
 
+        subset_key = ""
+        if self.config.data.subset:
+            s = self.config.data.subset
+            subset_key = (
+                f"{s.subdirectory}|{s.glob_pattern}|{s.file_list}"
+                f"|{s.fraction}|{s.fraction_seed}"
+            )
+
         return compute_hash(
             str(data_root),
             self.config.data.dataset,
@@ -129,4 +151,6 @@ class IngestStage(PipelineStage):
             self.config.data.time_steps,
             self.config.data.bars_per_instrument,
             self.config.seed,
+            subset_key,
+            self._max_files,
         )

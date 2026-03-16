@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import torch
 from torch.utils.data import Dataset
@@ -27,6 +27,10 @@ from midi_vae.data.rendering import build_strategy, ChannelStrategy
 from midi_vae.data.transforms import ResizeTransform
 from midi_vae.data.types import BarData, PianoRollImage
 from midi_vae.registry import ComponentRegistry
+
+if TYPE_CHECKING:
+    # SubsetConfig is defined in midi_vae.config (added by ALPHA)
+    from midi_vae.config import SubsetConfig
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +187,40 @@ class MidiDataset(Dataset):
             seed=self.seed,
         )
 
+    def _apply_subset(self, files: list[Path]) -> list[Path]:
+        """Apply subset filtering to a list of discovered files.
+
+        If ``data_config.subset`` is ``None`` the original list is returned
+        unchanged.  Otherwise ``midi_vae.data.subset.apply_subset`` is called
+        with the subset config, data_root, and this dataset's seed.
+
+        The call is intentionally deferred to import time so that the module
+        remains importable even when ``midi_vae.data.subset`` has not been
+        created yet (e.g. during parallel development).  A clear
+        ``ImportError`` is raised if the module is missing when a non-None
+        subset is configured.
+
+        Args:
+            files: Sorted list of Path objects returned by the dataset-specific
+                   glob.
+
+        Returns:
+            Filtered (and still sorted) list of Path objects.
+        """
+        subset = getattr(self.data_config, "subset", None)
+        if subset is None:
+            return files
+
+        try:
+            from midi_vae.data.subset import apply_subset  # noqa: PLC0415
+        except ImportError as exc:
+            raise ImportError(
+                "midi_vae.data.subset is required when data_config.subset is set, "
+                "but the module could not be imported."
+            ) from exc
+
+        return apply_subset(files, subset, self.data_root, self.seed)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Lakh MIDI Dataset
@@ -243,6 +281,7 @@ class LakhDataset(MidiDataset):
         bars: list[BarData] = []
 
         files = sorted(self.data_root.glob("**/*.mid"))
+        files = self._apply_subset(files)
         if self._max_files is not None:
             files = files[: self._max_files]
 
@@ -306,6 +345,7 @@ class Pop909Dataset(MidiDataset):
         bars: list[BarData] = []
 
         files = sorted(self.data_root.glob("**/*.mid"))
+        files = self._apply_subset(files)
         if self._max_files is not None:
             files = files[: self._max_files]
 
@@ -373,6 +413,7 @@ class MaestroDataset(MidiDataset):
             list(self.data_root.glob("**/*.midi"))
             + list(self.data_root.glob("**/*.mid"))
         )
+        files = self._apply_subset(files)
         if self._max_files is not None:
             files = files[: self._max_files]
 

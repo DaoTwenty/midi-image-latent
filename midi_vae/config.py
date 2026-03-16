@@ -21,6 +21,44 @@ class PathsConfig(BaseModel):
     cache_dir: str = "outputs/cache"
 
 
+class SubsetConfig(BaseModel):
+    """Controls which files from a dataset are selected for processing.
+
+    Filters are applied in this order: subdirectory, glob_pattern, file_list,
+    then fraction.  subdirectory and glob_pattern are mutually exclusive.
+    """
+
+    subdirectory: str | None = None
+    """Only files whose path relative to data_root starts with this prefix."""
+
+    glob_pattern: str | None = None
+    """Custom glob pattern relative to data_root (e.g. 'a/**/*.mid').
+    Mutually exclusive with subdirectory."""
+
+    file_list: str | None = None
+    """Path to a text file containing one filepath per line.
+    Paths are resolved relative to data_root."""
+
+    fraction: float | None = None
+    """Random fraction of files to retain, e.g. 0.1 for 10%.  Must be in (0.0, 1.0]."""
+
+    fraction_seed: int | None = None
+    """Separate RNG seed for fraction sampling; defaults to the top-level experiment seed."""
+
+    model_config = {"frozen": True}
+
+    @model_validator(mode="after")
+    def _validate_exclusivity(self) -> SubsetConfig:
+        """Ensure subdirectory and glob_pattern are not both set, and fraction is valid."""
+        if self.subdirectory and self.glob_pattern:
+            raise ValueError(
+                "subset.subdirectory and subset.glob_pattern are mutually exclusive"
+            )
+        if self.fraction is not None and not (0.0 < self.fraction <= 1.0):
+            raise ValueError("subset.fraction must be in (0.0, 1.0]")
+        return self
+
+
 class DataConfig(BaseModel):
     """Dataset selection and preprocessing parameters."""
 
@@ -33,6 +71,7 @@ class DataConfig(BaseModel):
     time_steps: int = 96  # 64 | 96 | 128
     target_resolution: tuple[int, int] = (128, 128)
     max_files: int | None = None  # Limit number of files loaded (for debugging/mini runs)
+    subset: SubsetConfig | None = None  # Optional subset filtering of source files
     pipeline_chunk_size: int = 2000  # Bars per chunk in Render→Encode→Decode→Detect→Evaluate.
     # Set to 0 or -1 to process all bars at once (original behaviour, risks OOM on large datasets).
 
