@@ -384,6 +384,12 @@ class SweepExecutor:
         # Accumulators: per-VAE list of per-bar metric dicts.
         accumulated_metrics: dict[str, list[dict[str, float]]] = {}
 
+        # Collect a few example (GT, recon) pairs for visualization before
+        # they are freed from each chunk context.
+        max_visual_examples = 4
+        # vae_name -> [(bar_id, gt_tensor, recon_tensor, channel_strategy), ...]
+        visual_examples: dict[str, list[tuple[str, Any, Any, str]]] = {}
+
         for chunk_idx in range(n_chunks):
             start = chunk_idx * chunk_size
             end = min(start + chunk_size, total_bars)
@@ -435,6 +441,31 @@ class SweepExecutor:
             for vae_name, bar_dicts in chunk_metrics.items():
                 accumulated_metrics.setdefault(vae_name, []).extend(bar_dicts)
 
+            # Collect visual examples from this chunk before the heavy keys
+            # are freed.  Only gather up to max_visual_examples per VAE and
+            # only until every known VAE is saturated.
+            chunk_images: list[Any] = chunk_context.get("images", [])
+            chunk_recons: dict[str, list[Any]] = chunk_context.get("reconstructed_bars", {})
+            if chunk_images and chunk_recons:
+                gt_lookup = {img.bar_id: img for img in chunk_images}
+                for vae_name, recon_list in chunk_recons.items():
+                    existing = visual_examples.setdefault(vae_name, [])
+                    if len(existing) >= max_visual_examples:
+                        continue
+                    for recon in recon_list:
+                        if len(existing) >= max_visual_examples:
+                            break
+                        gt_img = gt_lookup.get(recon.bar_id)
+                        if gt_img is None:
+                            continue
+                        # Clone tensors so they survive after chunk_context is freed.
+                        existing.append((
+                            recon.bar_id,
+                            gt_img.image.clone(),
+                            recon.recon_image.clone(),
+                            gt_img.channel_strategy,
+                        ))
+
             # Explicitly release heavy tensor data so Python/CUDA can GC them
             # before the next chunk is rendered.
             for heavy_key in ("images", "latents", "recon_images", "reconstructed_bars", "_vae_instances"):
@@ -468,4 +499,5 @@ class SweepExecutor:
             "bars": all_bars,
             "metrics": accumulated_metrics,
             "metrics_summary": final_metrics_summary,
+            "_visual_examples": visual_examples,
         }

@@ -433,14 +433,52 @@ def _log_piano_roll_examples(
 
         images = context.get("images", [])
         reconstructed_bars = context.get("reconstructed_bars", {})
+        visual_examples = context.get("_visual_examples", {})
 
         if not images or not reconstructed_bars:
-            # Chunked pipeline runs free these keys after each chunk — skip.
-            _log.debug(
-                "Skipping piano roll logging for condition '%s': "
-                "images or reconstructed_bars not in context (chunked run?)",
-                label,
-            )
+            if not visual_examples:
+                # No pre-collected examples either — nothing to log.
+                _log.debug(
+                    "Skipping piano roll logging for condition '%s': "
+                    "images or reconstructed_bars not in context (chunked run?)",
+                    label,
+                )
+                continue
+
+            # Chunked pipeline: use pre-collected (GT, recon) tensor pairs.
+            safe_label = label.replace("/", "_")
+            total_logged = 0
+            for vae_name, examples in visual_examples.items():
+                logged = 0
+                for bar_id, gt_tensor, recon_tensor, channel_strategy in examples:
+                    if logged >= max_examples:
+                        break
+                    try:
+                        fig = plot_gt_vs_recon(
+                            gt_image=gt_tensor,
+                            recon_image=recon_tensor,
+                            bar_id=bar_id,
+                            vae_name=vae_name,
+                            channel_strategy=channel_strategy,
+                        )
+                        key = f"examples/{safe_label}/{vae_name}/bar_{logged}"
+                        wandb_logger.log_image(key, fig)
+                        plt.close(fig)
+                        logged += 1
+                        total_logged += 1
+                    except Exception as exc:
+                        _log.warning(
+                            "Failed to log piano roll for bar '%s' (VAE '%s'): %s",
+                            bar_id,
+                            vae_name,
+                            exc,
+                        )
+            if total_logged:
+                _log.info(
+                    "Logged %d piano roll examples for condition '%s' (from pre-collected chunks)",
+                    total_logged,
+                    label,
+                )
             continue
 
         # Build bar_id -> PianoRollImage lookup
