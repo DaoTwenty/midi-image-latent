@@ -39,7 +39,12 @@ class StubMetric(Metric):
     def name(self) -> str:
         return "stub_metric"
 
-    def compute(self, gt: BarData, recon: ReconstructedBar) -> dict[str, float]:
+    def compute(
+        self,
+        gt: BarData,
+        recon: ReconstructedBar,
+        gt_image: PianoRollImage | None = None,
+    ) -> dict[str, float]:
         return {"stub_metric/value": 0.5}
 
 
@@ -98,7 +103,12 @@ class TestMetricsEngine:
                 def name(self) -> str:
                     return "test_stub_metric"
 
-                def compute(self, gt: BarData, recon: ReconstructedBar) -> dict[str, float]:
+                def compute(
+                    self,
+                    gt: BarData,
+                    recon: ReconstructedBar,
+                    gt_image: PianoRollImage | None = None,
+                ) -> dict[str, float]:
                     return {"test_stub_metric/value": 1.0}
 
         yield
@@ -167,7 +177,12 @@ class TestMetricsEngine:
             def requires_notes(self) -> bool:
                 return True
 
-            def compute(self, gt: BarData, recon: ReconstructedBar) -> dict[str, float]:
+            def compute(
+                self,
+                gt: BarData,
+                recon: ReconstructedBar,
+                gt_image: PianoRollImage | None = None,
+            ) -> dict[str, float]:
                 return {"note_requiring_metric/f1": 1.0}
 
         engine = MetricsEngine(["note_requiring_metric"])

@@ -37,6 +37,11 @@ class PixelMSE(Metric):
         """Metric identifier."""
         return 'pixel_mse'
 
+    @property
+    def requires_image(self) -> bool:
+        """Requires a rendered PianoRollImage for comparison."""
+        return True
+
     def compute(
         self,
         gt: BarData,
@@ -166,6 +171,11 @@ class SSIM(Metric):
         """Metric identifier."""
         return 'ssim'
 
+    @property
+    def requires_image(self) -> bool:
+        """Requires a rendered PianoRollImage for comparison."""
+        return True
+
     def compute(
         self,
         gt: BarData,
@@ -226,6 +236,11 @@ class PSNR(Metric):
     def name(self) -> str:
         """Metric identifier."""
         return 'psnr'
+
+    @property
+    def requires_image(self) -> bool:
+        """Requires a rendered PianoRollImage for comparison."""
+        return True
 
     def compute(
         self,

@@ -74,6 +74,7 @@ class LatentVariance(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute variance statistics of the latent encoding.
 
@@ -132,6 +133,7 @@ class LatentChannelCorrelation(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute mean pairwise correlation across latent channels.
 
@@ -299,6 +301,7 @@ class LinearProbePitchAccuracy(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate one (latent_vector, pitch_class) pair.
 
@@ -370,6 +373,7 @@ class LinearProbeInstrumentAccuracy(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate one (latent_vector, instrument_label) pair.
 
@@ -442,6 +446,7 @@ class SilhouetteScore(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate one (latent_vector, instrument_label) pair.
 

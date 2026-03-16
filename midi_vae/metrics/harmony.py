@@ -178,6 +178,7 @@ class OnsetF1(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute onset F1, precision, and recall.
 
@@ -227,6 +228,7 @@ class OnsetPrecision(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute onset precision.
 
@@ -277,6 +279,7 @@ class OnsetRecall(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute onset recall.
 
@@ -353,6 +356,7 @@ class NoteDensityPearson(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute Pearson r of note density per time step.
 
@@ -447,6 +451,7 @@ class PitchClassHistogramCorrelation(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute pitch class histogram correlation.
 
@@ -573,6 +578,7 @@ class IntervalHistogramCorrelation(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute interval histogram correlation.
 

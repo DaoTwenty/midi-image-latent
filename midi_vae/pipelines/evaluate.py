@@ -21,7 +21,7 @@ import logging
 from typing import Any
 
 from midi_vae.config import ExperimentConfig
-from midi_vae.data.types import BarData, ReconstructedBar
+from midi_vae.data.types import BarData, PianoRollImage, ReconstructedBar
 from midi_vae.metrics.base import MetricsEngine
 import midi_vae.metrics  # noqa: F401 — trigger registration of all metrics
 from midi_vae.pipelines.base import PipelineStage, StageIO, compute_hash
@@ -60,11 +60,15 @@ class EvaluateStage(PipelineStage):
         """Declare inputs and outputs.
 
         Returns:
-            StageIO with inputs=("bars", "reconstructed_bars") and
+            StageIO with inputs=("bars", "reconstructed_bars", "images") and
             outputs=("metrics", "metrics_summary").
+
+        Note: "images" is optional — the stage works without it, but
+        image-requiring metrics (PixelMSE, SSIM, PSNR) will be skipped
+        if it is absent.
         """
         return StageIO(
-            inputs=("bars", "reconstructed_bars"),
+            inputs=("bars", "reconstructed_bars", "images"),
             outputs=("metrics", "metrics_summary"),
         )
 
@@ -72,7 +76,8 @@ class EvaluateStage(PipelineStage):
         """Compute metrics for all reconstructed bars.
 
         Args:
-            context: Pipeline context with "bars" and "reconstructed_bars".
+            context: Pipeline context with "bars", "reconstructed_bars", and
+                optionally "images" (list[PianoRollImage] from RenderStage).
 
         Returns:
             Dict with keys "metrics" and "metrics_summary".
@@ -81,6 +86,7 @@ class EvaluateStage(PipelineStage):
         reconstructed_bars: dict[str, list[ReconstructedBar]] = context.get(
             "reconstructed_bars", {}
         )
+        images: list[PianoRollImage] = context.get("images", [])
 
         if not reconstructed_bars:
             logger.warning("EvaluateStage received no reconstructed_bars")
@@ -92,6 +98,19 @@ class EvaluateStage(PipelineStage):
 
         # Build bar_id -> BarData lookup
         gt_by_id: dict[str, BarData] = {bar.bar_id: bar for bar in bars}
+
+        # Build bar_id -> PianoRollImage lookup (None when images not available)
+        images_by_id: dict[str, PianoRollImage] | None = None
+        if images:
+            images_by_id = {img.bar_id: img for img in images}
+            logger.info(
+                "EvaluateStage: image lookup built for %d bars", len(images_by_id)
+            )
+        else:
+            logger.warning(
+                "EvaluateStage: no 'images' in context — image-level metrics "
+                "(PixelMSE, SSIM, PSNR) will be skipped"
+            )
 
         engine = self._get_engine()
         metrics: dict[str, list[dict[str, float]]] = {}
@@ -125,7 +144,7 @@ class EvaluateStage(PipelineStage):
                 metrics_summary[vae_name] = {}
                 continue
 
-            per_bar_results = engine.evaluate_batch(pairs)
+            per_bar_results = engine.evaluate_batch(pairs, images_by_id=images_by_id)
             metrics[vae_name] = per_bar_results
 
             # Compute mean per metric key

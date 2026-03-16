@@ -136,6 +136,7 @@ class IOIDistributionKL(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute KL divergence of IOI distributions.
 
@@ -244,6 +245,7 @@ class GrooveConsistency(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute groove consistency via autocorrelation correlation.
 

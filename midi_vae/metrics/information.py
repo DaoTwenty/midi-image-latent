@@ -96,6 +96,7 @@ class NoteEntropyDiff(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute Shannon entropy difference between original and reconstructed pitch distributions.
 
@@ -317,6 +318,7 @@ class MutualInformationPitchTime(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute mutual information for both original and reconstructed piano rolls.
 
@@ -364,6 +366,7 @@ class KLDivergencePitchDist(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute KL(P_orig || P_recon) over pitch distributions.
 
@@ -449,6 +452,7 @@ class ActivationSparsity(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute activation sparsity of the reconstructed image.
 

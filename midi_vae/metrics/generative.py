@@ -209,6 +209,7 @@ class SelfSimilarityMatrix(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate one bar's feature vector.
 
@@ -331,6 +332,7 @@ class TransitionEntropy(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate the dominant pitch class of this bar.
 
@@ -433,6 +435,7 @@ class SequenceGrooveConsistency(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate the onset indicator for one bar.
 
@@ -523,6 +526,7 @@ class PitchClassHistogramKL(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate pitch class counts for one bar pair.
 
@@ -623,6 +627,7 @@ class BarLevelNLL(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute per-pixel Gaussian NLL of the reconstructed image.
 
@@ -697,6 +702,7 @@ class SequenceCoherence(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute per-bar pitch class entropy for gt and generated bars.
 

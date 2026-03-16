@@ -156,6 +156,7 @@ class ConditioningFidelity(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate one (feature, instrument_label) pair.
 
@@ -271,6 +272,7 @@ class AttributeAccuracy(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate one (feature, label) pair.
 
@@ -387,6 +389,7 @@ class InterpolationSmoothness(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate one step's feature vector.
 
@@ -471,6 +474,7 @@ class ConditionalPitchAlignment(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute pitch class alignment for one bar.
 
@@ -565,6 +569,7 @@ class DisentanglementScore(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Accumulate one (feature, label) pair.
 

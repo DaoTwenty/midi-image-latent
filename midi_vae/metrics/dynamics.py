@@ -152,6 +152,7 @@ class VelocityMSE(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute MSE of velocity profiles.
 
@@ -195,6 +196,7 @@ class VelocityCorrelation(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute Pearson correlation of velocity profiles.
 
@@ -253,6 +255,7 @@ class VelocityHistogramKL(Metric):
         self,
         gt: BarData,
         recon: ReconstructedBar,
+        gt_image: "PianoRollImage | None" = None,
     ) -> dict[str, float]:
         """Compute KL divergence of velocity histograms.
 
