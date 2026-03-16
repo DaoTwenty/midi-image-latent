@@ -1,5 +1,10 @@
 # Plan: Data Subset Feature
 
+> **STATUS: IMPLEMENTED** — All components described below have been merged to `main`.
+> `SubsetConfig` lives in `midi_vae/config.py`, filtering logic in `midi_vae/data/subset.py`,
+> and the CLI flags are present in both `scripts/run_experiment.py` and
+> `scripts/preprocess_dataset.py`.  See `docs/RUNNING_EXPERIMENTS.md` for usage examples.
+
 **Branch**: `feature/data-subset`
 **Goal**: Let users run experiments or training on a subset of a dataset (e.g., only files from `data/lakh/f/`, a random 10% sample, or an explicit file list).
 

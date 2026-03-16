@@ -160,6 +160,9 @@ Options:
   --resume-from STAGE     Resume pipeline from a specific stage name
   --sweep-detectors       Sweep all detection_methods from the YAML
   --sweep-strategies      Sweep all channel_strategies from the YAML
+  --subset-dir SUBDIR     Only load files from this subdirectory under data_root
+  --subset-fraction FRAC  Random fraction of files to use (e.g. 0.1 for 10%)
+  --subset-file-list PATH Path to a text file listing specific files (one per line)
   --log-level LEVEL       DEBUG | INFO | WARNING | ERROR  (default: INFO)
 ```
 
@@ -184,6 +187,80 @@ python scripts/run_experiment.py \
     --data-root data/maestro/maestro-v3.0.0 \
     --resume-from detect
 ```
+
+---
+
+## Data Subsetting
+
+The three `--subset-*` flags (and the `data.subset` YAML block) let you narrow which
+files are loaded before any experiment logic runs.  Filtering is applied after file
+discovery but before `max_files` truncation, so all subsetting modes compose cleanly
+with `--mini` and `--max-files`.
+
+### Subdirectory filter
+
+Load only files that live under a specific subdirectory of `data_root`.  Useful for
+Lakh, which organises files into 16 alphabetical partitions (`a/` through `f/` etc.).
+
+```bash
+python scripts/run_experiment.py \
+    configs/experiments/exp_1a_vae_comparison.yaml \
+    --data-root data/lakh \
+    --subset-dir f/
+```
+
+Equivalent YAML (embed directly in an experiment config or an override file):
+
+```yaml
+data:
+  subset:
+    subdirectory: "f/"
+```
+
+### Random fraction
+
+Sample a reproducible random fraction of the discovered files.  The seed defaults to
+the top-level `seed` config value; override it with `data.subset.fraction_seed`.
+
+```bash
+python scripts/run_experiment.py \
+    configs/experiments/exp_1a_vae_comparison.yaml \
+    --data-root data/lakh \
+    --subset-fraction 0.1
+```
+
+### Explicit file list
+
+Provide a plain-text file with one path per line (relative to `data_root`).  Only
+those files are loaded.  Handy for curated debug sets or held-out test splits.
+
+```bash
+python scripts/run_experiment.py \
+    configs/experiments/exp_1a_vae_comparison.yaml \
+    --data-root data/lakh \
+    --subset-file-list configs/file_lists/curated_100.txt
+```
+
+### Composition with `--mini` and `--max-files`
+
+Subset filters run before `max_files` is applied, so they compose cleanly:
+
+```bash
+# 50% of files from the 'f/' partition, hard-capped at 5 (mini mode)
+python scripts/run_experiment.py \
+    configs/experiments/exp_1a_vae_comparison.yaml \
+    --data-root data/lakh \
+    --subset-dir f/ \
+    --mini
+```
+
+The processing order is:
+
+1. Default dataset glob (discover all candidate files)
+2. `subdirectory` — narrow to a subtree
+3. `file_list` — intersect with an explicit allowlist
+4. `fraction` — randomly sample from what remains
+5. `max_files` — hard cap on final count
 
 ---
 
@@ -272,12 +349,20 @@ The `sweep_summary.json` contains:
   "conditions": ["sd_vae_ft_mse__velocity_only__global_threshold", ...],
   "metrics_summary": {
     "sd_vae_ft_mse__velocity_only__global_threshold": {
-      "sd_vae_ft_mse/pixel_mse": 0.023,
+      "pixel_mse": 0.023,
       ...
     }
   }
 }
 ```
+
+### Wandb piano roll examples
+
+When wandb tracking is enabled, GT vs reconstructed piano roll comparisons are logged
+automatically as images under the key `examples/{condition}/{vae}/bar_{i}` — up to 4
+examples per (condition, VAE) pair.  No extra configuration is required; the runner
+calls `plot_gt_vs_recon` from `midi_vae/visualization/piano_roll.py` and uploads the
+result at the end of each condition's evaluate stage.
 
 ---
 
