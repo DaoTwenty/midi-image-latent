@@ -225,6 +225,32 @@ class WandbLogger:
         except Exception as exc:
             logger.warning("WandbLogger: failed to log artifact: %s", exc)
 
+    def log_image(
+        self,
+        key: str,
+        figure: Any,
+    ) -> None:
+        """Log a matplotlib Figure as a wandb Image.
+
+        The figure is wrapped in ``wandb.Image`` and logged under *key*.
+        The figure is NOT closed by this method — callers are responsible
+        for calling ``plt.close(figure)`` after logging to avoid memory leaks.
+
+        Args:
+            key: Metric key to use in the wandb dashboard (e.g.
+                ``"examples/my_condition/bar_0"``).
+            figure: A ``matplotlib.figure.Figure`` object to upload.
+        """
+        if not self._enabled or self._run is None:
+            return
+
+        try:
+            import wandb
+
+            self._run.log({key: wandb.Image(figure)})
+        except Exception as exc:
+            logger.warning("WandbLogger: failed to log image '%s': %s", key, exc)
+
     def log_table(
         self,
         key: str,
