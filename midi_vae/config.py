@@ -33,6 +33,8 @@ class DataConfig(BaseModel):
     time_steps: int = 96  # 64 | 96 | 128
     target_resolution: tuple[int, int] = (128, 128)
     max_files: int | None = None  # Limit number of files loaded (for debugging/mini runs)
+    pipeline_chunk_size: int = 2000  # Bars per chunk in Render→Encode→Decode→Detect→Evaluate.
+    # Set to 0 or -1 to process all bars at once (original behaviour, risks OOM on large datasets).
 
 
 class RenderConfig(BaseModel):

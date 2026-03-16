@@ -17,6 +17,7 @@ from __future__ import annotations
 import gc
 import itertools
 import logging
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -309,16 +310,162 @@ class SweepExecutor:
     ) -> dict[str, Any]:
         """Run the full pipeline for a single condition.
 
+        When ``config.data.pipeline_chunk_size`` is positive, bars are
+        processed in chunks to avoid materialising all images, latents, and
+        reconstructed images in memory simultaneously.  The IngestStage runs
+        once to produce all BarData objects (lightweight), then the rest of the
+        pipeline (Render → Encode → Decode → Detect → Evaluate) is executed
+        repeatedly on successive slices of that list.  Per-bar metric dicts are
+        accumulated across chunks and a final summary is computed after all
+        chunks have been processed.
+
+        When ``pipeline_chunk_size`` is 0 or negative the original
+        single-pass behaviour is preserved.
+
         Args:
             config: Per-condition experiment config.
             resume_from: Stage name to resume from (or None).
 
         Returns:
-            Final pipeline context dict.
+            Final pipeline context dict containing at least "bars",
+            "metrics", and "metrics_summary".  Heavy tensor keys
+            ("images", "latents", "recon_images", "reconstructed_bars")
+            are NOT present in the returned context when chunking is active
+            — they are freed after each chunk.
         """
-        cache_dir = (
-            str(Path(config.paths.cache_dir) / config.tracking.experiment_name)
+        cache_dir = str(
+            Path(config.paths.cache_dir) / config.tracking.experiment_name
         )
-        stages = self._build_stages(config)
-        runner = PipelineRunner(stages, config, cache_dir=cache_dir)
-        return runner.run(resume_from=resume_from)
+        chunk_size: int = config.data.pipeline_chunk_size
+
+        # ------------------------------------------------------------------ #
+        # Fast path: no chunking requested — run the original single pass.    #
+        # ------------------------------------------------------------------ #
+        if chunk_size <= 0:
+            stages = self._build_stages(config)
+            runner = PipelineRunner(stages, config, cache_dir=cache_dir)
+            return runner.run(resume_from=resume_from)
+
+        # ------------------------------------------------------------------ #
+        # Chunked path                                                         #
+        # ------------------------------------------------------------------ #
+
+        # Step 1: Ingest once — BarData objects are lightweight (~12 KB each).
+        ingest_stage = IngestStage(config)
+        ingest_runner = PipelineRunner(
+            [ingest_stage], config, cache_dir=cache_dir
+        )
+        ingest_context = ingest_runner.run(resume_from=resume_from)
+        all_bars: list[Any] = ingest_context.get("bars", [])
+
+        if not all_bars:
+            logger.warning("_run_condition: IngestStage produced no bars — skipping chunked processing")
+            return ingest_context
+
+        total_bars = len(all_bars)
+        n_chunks = (total_bars + chunk_size - 1) // chunk_size
+        logger.info(
+            "_run_condition: %d bars split into %d chunk(s) of up to %d",
+            total_bars,
+            n_chunks,
+            chunk_size,
+        )
+
+        # Stages that run on each chunk (excludes IngestStage).
+        chunk_stage_classes = [
+            RenderStage,
+            EncodeStage,
+            DecodeStage,
+            DetectStage,
+            EvaluateStage,
+        ]
+        chunk_stage_classes.extend(type(s) for s in self._extra_stages)
+
+        # Accumulators: per-VAE list of per-bar metric dicts.
+        accumulated_metrics: dict[str, list[dict[str, float]]] = {}
+
+        for chunk_idx in range(n_chunks):
+            start = chunk_idx * chunk_size
+            end = min(start + chunk_size, total_bars)
+            chunk_bars = all_bars[start:end]
+
+            logger.info(
+                "Processing chunk %d/%d (bars %d-%d)",
+                chunk_idx + 1,
+                n_chunks,
+                start + 1,
+                end,
+            )
+
+            # Build a fresh context seeded with this chunk's bars.
+            chunk_context: dict[str, Any] = {"bars": chunk_bars}
+
+            # Instantiate fresh stage objects for each chunk so that any
+            # internal state (e.g. lazy-built detector) does not leak
+            # across chunks.
+            chunk_stages: list[PipelineStage] = [
+                cls(config) for cls in chunk_stage_classes
+            ]
+
+            chunk_runner = PipelineRunner(
+                chunk_stages, config, cache_dir=None  # no caching for chunks
+            )
+
+            # Run only the non-ingest stages; ingest output is already in
+            # chunk_context so we skip IngestStage by not including it.
+            if chunk_runner._execution_order is None:
+                chunk_runner._execution_order = chunk_runner._topological_sort()
+
+            for stage in chunk_runner._execution_order:
+                stage_name = stage.name
+                logger.info("[RUN chunk %d/%d] %s", chunk_idx + 1, n_chunks, stage_name)
+                t0 = time.time()
+                outputs = stage.run(chunk_context)
+                elapsed = time.time() - t0
+                logger.info(
+                    "[DONE chunk %d/%d] %s (%.1fs)",
+                    chunk_idx + 1, n_chunks, stage_name, elapsed,
+                )
+                chunk_context.update(outputs)
+
+            # Accumulate per-bar metrics from this chunk.
+            chunk_metrics: dict[str, list[dict[str, float]]] = chunk_context.get(
+                "metrics", {}
+            )
+            for vae_name, bar_dicts in chunk_metrics.items():
+                accumulated_metrics.setdefault(vae_name, []).extend(bar_dicts)
+
+            # Explicitly release heavy tensor data so Python/CUDA can GC them
+            # before the next chunk is rendered.
+            for heavy_key in ("images", "latents", "recon_images", "reconstructed_bars", "_vae_instances"):
+                chunk_context.pop(heavy_key, None)
+            del chunk_context
+            gc.collect()
+            self._free_gpu_memory()
+
+        # ------------------------------------------------------------------ #
+        # Aggregate accumulated per-bar metrics into a final summary.         #
+        # ------------------------------------------------------------------ #
+        final_metrics_summary: dict[str, dict[str, float]] = {}
+        for vae_name, bar_dicts in accumulated_metrics.items():
+            if bar_dicts:
+                all_keys: set[str] = set().union(*[d.keys() for d in bar_dicts])  # type: ignore[arg-type]
+                summary: dict[str, float] = {}
+                for key in all_keys:
+                    values = [d[key] for d in bar_dicts if key in d]
+                    summary[key] = sum(values) / len(values) if values else float("nan")
+                final_metrics_summary[vae_name] = summary
+            else:
+                final_metrics_summary[vae_name] = {}
+
+        logger.info(
+            "_run_condition: chunked processing complete — %d VAEs evaluated over %d total bars",
+            len(final_metrics_summary),
+            total_bars,
+        )
+
+        return {
+            "bars": all_bars,
+            "metrics": accumulated_metrics,
+            "metrics_summary": final_metrics_summary,
+        }
