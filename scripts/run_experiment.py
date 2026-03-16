@@ -356,6 +356,117 @@ def _print_summary(results: dict, elapsed: float) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Piano roll image logging helper
+# ---------------------------------------------------------------------------
+
+
+def _log_piano_roll_examples(
+    wandb_logger: "WandbLogger",
+    all_results: dict,
+    max_examples: int = 4,
+) -> None:
+    """Log GT vs reconstructed piano roll comparison figures to wandb.
+
+    For each condition in *all_results*, picks up to *max_examples* bars per
+    VAE and uploads side-by-side comparison figures as ``wandb.Image`` objects.
+    Figures are closed immediately after logging to avoid memory leaks.
+
+    This function is silently skipped when:
+      * wandb logging is not active.
+      * The context dict for a condition has no ``images`` or
+        ``reconstructed_bars`` (this is the case for chunked pipeline runs
+        where heavy tensors are freed after each chunk).
+      * Any unexpected error occurs (non-critical — logged as a warning).
+
+    Args:
+        wandb_logger: An active :class:`WandbLogger` instance.
+        all_results: The dict returned by :meth:`SweepExecutor.run`.
+            Keys are condition labels; the ``"__summary__"`` key is skipped.
+        max_examples: Maximum number of bar comparisons to log per
+            (condition, VAE) pair.  Defaults to 4.
+    """
+    if not wandb_logger.enabled:
+        return
+
+    try:
+        import matplotlib.pyplot as plt
+
+        from midi_vae.visualization.piano_roll import plot_gt_vs_recon
+    except ImportError as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "Skipping piano roll image logging — import failed: %s", exc
+        )
+        return
+
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    for label, context in all_results.items():
+        if label.startswith("__"):
+            continue
+
+        if not isinstance(context, dict):
+            continue
+
+        images = context.get("images", [])
+        reconstructed_bars = context.get("reconstructed_bars", {})
+
+        if not images or not reconstructed_bars:
+            # Chunked pipeline runs free these keys after each chunk — skip.
+            _log.debug(
+                "Skipping piano roll logging for condition '%s': "
+                "images or reconstructed_bars not in context (chunked run?)",
+                label,
+            )
+            continue
+
+        # Build bar_id -> PianoRollImage lookup
+        gt_lookup = {img.bar_id: img for img in images}
+
+        for vae_name, recon_list in reconstructed_bars.items():
+            logged = 0
+            for recon in recon_list:
+                if logged >= max_examples:
+                    break
+
+                gt_img = gt_lookup.get(recon.bar_id)
+                if gt_img is None:
+                    continue
+
+                try:
+                    fig = plot_gt_vs_recon(
+                        gt_image=gt_img.image,
+                        recon_image=recon.recon_image,
+                        bar_id=recon.bar_id,
+                        vae_name=vae_name,
+                        channel_strategy=gt_img.channel_strategy,
+                    )
+
+                    safe_label = label.replace("/", "_")
+                    key = f"examples/{safe_label}/{vae_name}/bar_{logged}"
+                    wandb_logger.log_image(key, fig)
+                    plt.close(fig)
+                    logged += 1
+                except Exception as exc:
+                    _log.warning(
+                        "Failed to log piano roll for bar '%s' (VAE '%s'): %s",
+                        recon.bar_id,
+                        vae_name,
+                        exc,
+                    )
+
+        if logged_for_condition := sum(
+            min(max_examples, len(v)) for v in reconstructed_bars.values()
+        ):
+            _log.info(
+                "Logged up to %d piano roll examples for condition '%s'",
+                logged_for_condition,
+                label,
+            )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -553,6 +664,12 @@ def main() -> int:
                 for label, metrics in sweep_summary.items()
             ]
             wandb_logger.log_table("sweep_results", columns=columns, data=rows)
+
+        # Log example piano roll comparisons (GT vs reconstructed)
+        try:
+            _log_piano_roll_examples(wandb_logger, results)
+        except Exception as exc:
+            logger.warning("Failed to log piano roll examples: %s", exc)
 
         # Log final summary
         wandb_logger.log_summary({
