@@ -188,8 +188,8 @@ class SweepExecutor:
                     tag="sweep_eval",
                 )
                 aggregated_summary[condition.label] = {
-                    f"{vae}/{k}": v
-                    for vae, kv in summary.items()
+                    k: v
+                    for kv in summary.values()
                     for k, v in kv.items()
                 }
 
