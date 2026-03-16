@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=exp1a-mini
-#SBATCH --gres=gpu:1
+#SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
@@ -36,7 +36,6 @@ if [[ -f "$REPO/.env" ]]; then
 fi
 
 # Wandb: offline on compute nodes (no internet), sync later from login node
-export WANDB_MODE=offline
 export WANDB_DIR="$REPO/outputs"
 
 source "$REPO/.venv/bin/activate"
@@ -45,13 +44,12 @@ cd "$REPO"
 
 echo "Python: $(which python)"
 echo "HF_HOME: $HF_HOME"
-echo "WANDB_MODE: $WANDB_MODE"
 echo "CUDA devices: $(python -c 'import torch; print(torch.cuda.device_count(), "GPU(s)")')"
 
 python scripts/run_experiment.py \
     configs/experiments/exp_1a_vae_comparison.yaml \
     --mini \
-    --data-root data/maestro/maestro-v3.0.0 \
+    --data-root data/lakh \
     --log-level INFO
 
 echo ""

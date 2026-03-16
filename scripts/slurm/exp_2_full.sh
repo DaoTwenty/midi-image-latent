@@ -80,7 +80,7 @@ for entry in "${VARIANTS[@]}"; do
     # Write a minimal override YAML for this variant
     cat > "$override_yaml" << YAML
 paths:
-  data_root: data/maestro/maestro-v3.0.0
+  data_root: data/lakh
   output_root: outputs/exp_2/${name}/
   cache_dir: outputs/exp_2/${name}/cache/
 

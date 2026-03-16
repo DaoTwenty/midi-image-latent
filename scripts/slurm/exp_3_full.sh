@@ -55,7 +55,7 @@ echo "CUDA devices: $(python -c 'import torch; print(torch.cuda.device_count(), 
 
 python scripts/run_experiment.py \
     configs/experiments/exp_3_channel_strategy.yaml \
-    --data-root data/maestro/maestro-v3.0.0 \
+    --data-root data/lakh \
     --sweep-strategies \
     --log-level INFO
 

@@ -52,7 +52,7 @@ bash scripts/download_data.sh pop909     # POP909 (~20 MB, 909 songs)
 # Preprocess MAESTRO (piano only, classical)
 python scripts/preprocess_dataset.py \
     --config configs/base.yaml configs/data/maestro.yaml \
-    --data-root data/maestro/maestro-v3.0.0 \
+    --data-root data/lakh \
     --output-dir outputs/cache/maestro
 
 # Preprocess Lakh (multi-instrument, 178K songs)
@@ -76,12 +76,12 @@ python scripts/preprocess_dataset.py \
 python scripts/run_experiment.py \
     configs/experiments/exp_1a_vae_comparison.yaml \
     --mini \
-    --data-root data/maestro/maestro-v3.0.0
+    --data-root data/lakh
 
 # Full run (12 VAEs, 5000 bars, ~2h on H100)
 python scripts/run_experiment.py \
     configs/experiments/exp_1a_vae_comparison.yaml \
-    --data-root data/maestro/maestro-v3.0.0 \
+    --data-root data/lakh \
     --sweep-strategies
 
 # Dry run (list conditions without executing)
@@ -103,6 +103,8 @@ python scripts/run_experiment.py \
 | **4C** | `exp_4c_sublatent.yaml` | Sub-latent compression (PCA, MLP, sub-VAE) |
 | **4D** | `exp_4d_conditioning.yaml` | Conditional generation with instrument/tempo features |
 | **5** | `exp_5_sequence_generation.yaml` | Sequence-level generation with Transformer |
+
+For a detailed breakdown of every config field, sweep mechanics, and per-experiment instructions, see **[EXPERIMENTS.md](EXPERIMENTS.md)**.
 
 ## Running on a SLURM Cluster
 

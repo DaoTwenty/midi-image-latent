@@ -52,7 +52,7 @@ echo "HF_HOME: $HF_HOME"
 echo "WANDB_MODE: $WANDB_MODE"
 echo "CUDA devices: $(python -c 'import torch; print(torch.cuda.device_count(), "GPU(s)")')"
 
-DATA_ROOT="data/maestro/maestro-v3.0.0"
+DATA_ROOT="data/lakh"
 MINI_FLAGS="--mini --data-root $DATA_ROOT --log-level INFO"
 
 # ------------------------------------------------------------------ Exp 1A

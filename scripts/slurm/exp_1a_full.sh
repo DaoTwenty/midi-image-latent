@@ -1,9 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=exp1a-full
-#SBATCH --gres=gpu:1
+#SBATCH --account=def-pasquier
+#SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=04:00:00
+#SBATCH --time=03:00:00
 #SBATCH --output=/scratch/triana24/midi-image-latent/outputs/logs/exp1a_full_%j.log
 #SBATCH --error=/scratch/triana24/midi-image-latent/outputs/logs/exp1a_full_%j.log
 
@@ -40,8 +41,6 @@ if [[ -f "$REPO/.env" ]]; then
     done < <(grep -v '^#' "$REPO/.env" | grep '=')
 fi
 
-# Wandb: offline on compute nodes (no internet), sync later from login node
-export WANDB_MODE=offline
 export WANDB_DIR="$REPO/outputs"
 
 source "$REPO/.venv/bin/activate"
@@ -50,18 +49,16 @@ cd "$REPO"
 
 echo "Python: $(which python)"
 echo "HF_HOME: $HF_HOME"
-echo "WANDB_MODE: $WANDB_MODE"
 echo "CUDA devices: $(python -c 'import torch; print(torch.cuda.device_count(), "GPU(s)")')"
 
 python scripts/run_experiment.py \
     configs/experiments/exp_1a_vae_comparison.yaml \
-    --data-root data/maestro/maestro-v3.0.0 \
+    --data-root data/pop909 \
+    --override-config configs/overrides/use_pop909.yaml \
     --sweep-strategies \
-    --log-level INFO
+    --log-level DEBUG
 
 echo ""
-echo "[wandb] Offline runs saved. Sync from login node:"
-echo "  bash scripts/wandb_sync.sh"
 echo "=========================================="
 echo "Done: $(date)"
 echo "=========================================="

@@ -90,6 +90,7 @@ class DecodeStage(PipelineStage):
                 logger.info(
                     "DecodeStage: reusing VAE '%s' from EncodeStage", vae_name
                 )
+                vae_cfg = vae.config
             else:
                 vae_cfg = vae_cfg_by_name.get(vae_name)
                 if vae_cfg is None:

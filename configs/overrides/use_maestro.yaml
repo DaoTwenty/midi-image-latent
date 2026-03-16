@@ -1,0 +1,13 @@
+## Override: switch any experiment to MAESTRO dataset
+## Usage: python scripts/run_experiment.py <CONFIG> --override-config configs/overrides/use_maestro.yaml
+##
+## MAESTRO v3 — 1276 classical piano MIDI files (.midi extension)
+## Only has piano — instruments list is reduced accordingly.
+
+data:
+  dataset: maestro
+  instruments:
+    - piano
+
+paths:
+  data_root: data/maestro/maestro-v3.0.0

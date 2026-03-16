@@ -1,0 +1,17 @@
+## Override: switch any experiment to Lakh MIDI dataset
+## Usage: python scripts/run_experiment.py <CONFIG> --override-config configs/overrides/use_lakh.yaml
+##
+## Lakh MIDI — 178K multi-instrument MIDI files (.mid extension)
+## All 5 instrument families available.
+
+data:
+  dataset: lakh
+  instruments:
+    - drums
+    - bass
+    - guitar
+    - piano
+    - strings
+
+paths:
+  data_root: data/lakh
