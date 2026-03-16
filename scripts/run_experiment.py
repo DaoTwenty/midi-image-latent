@@ -157,6 +157,28 @@ def parse_args() -> argparse.Namespace:
         metavar="PATH",
         help="Override paths.output_root in the config.",
     )
+    parser.add_argument(
+        "--subset-dir",
+        default=None,
+        metavar="SUBDIR",
+        help=(
+            "Only load files from this subdirectory under data_root "
+            "(e.g. 'f/' for the Lakh 'f' partition)."
+        ),
+    )
+    parser.add_argument(
+        "--subset-fraction",
+        type=float,
+        default=None,
+        metavar="FRAC",
+        help="Random fraction of files to use, e.g. 0.1 for 10%% (range: 0.0 < FRAC <= 1.0).",
+    )
+    parser.add_argument(
+        "--subset-file-list",
+        default=None,
+        metavar="PATH",
+        help="Path to a text file listing specific files to use (one filepath per line).",
+    )
     return parser.parse_args()
 
 
@@ -395,6 +417,17 @@ def main() -> int:
     if args.output_root:
         raw = _apply_output_root(raw, args.output_root)
         logger.info("output_root overridden", output_root=args.output_root)
+
+    # Apply subset CLI flags — update the raw OmegaConf before Pydantic validation.
+    if args.subset_dir:
+        OmegaConf.update(raw, "data.subset.subdirectory", args.subset_dir, merge=True)
+        logger.info("subset.subdirectory overridden", subdirectory=args.subset_dir)
+    if args.subset_fraction is not None:
+        OmegaConf.update(raw, "data.subset.fraction", args.subset_fraction, merge=True)
+        logger.info("subset.fraction overridden", fraction=args.subset_fraction)
+    if args.subset_file_list:
+        OmegaConf.update(raw, "data.subset.file_list", args.subset_file_list, merge=True)
+        logger.info("subset.file_list overridden", file_list=args.subset_file_list)
 
     # Collect sweep axes before mini truncates the VAE list
     sweep_detectors: list[str] | None = None

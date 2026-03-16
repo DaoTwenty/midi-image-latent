@@ -74,6 +74,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Save rendered tensors to an HDF5 file.",
     )
     parser.add_argument(
+        "--subset-dir",
+        default=None,
+        metavar="SUBDIR",
+        help=(
+            "Only load files from this subdirectory under data_root "
+            "(e.g. 'f/' for the Lakh 'f' partition)."
+        ),
+    )
+    parser.add_argument(
+        "--subset-fraction",
+        type=float,
+        default=None,
+        metavar="FRAC",
+        help="Random fraction of files to use, e.g. 0.1 for 10%% (range: 0.0 < FRAC <= 1.0).",
+    )
+    parser.add_argument(
+        "--subset-file-list",
+        default=None,
+        metavar="PATH",
+        help="Path to a text file listing specific files to use (one filepath per line).",
+    )
+    parser.add_argument(
         "--overrides",
         nargs="*",
         default=[],
@@ -134,6 +156,12 @@ def main(argv: list[str] | None = None) -> int:
     overrides = list(args.overrides)
     if args.data_root:
         overrides.append(f"paths.data_root={args.data_root}")
+    if args.subset_dir:
+        overrides.append(f"data.subset.subdirectory={args.subset_dir}")
+    if args.subset_fraction is not None:
+        overrides.append(f"data.subset.fraction={args.subset_fraction}")
+    if args.subset_file_list:
+        overrides.append(f"data.subset.file_list={args.subset_file_list}")
 
     # Load config
     try:
