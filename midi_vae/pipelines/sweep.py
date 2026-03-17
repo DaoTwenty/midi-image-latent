@@ -20,7 +20,10 @@ import logging
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from midi_vae.tracking.wandb_logger import WandbLogger
 
 from midi_vae.config import (
     ExperimentConfig,
@@ -135,6 +138,7 @@ class SweepExecutor:
         self,
         resume_from: str | None = None,
         dry_run: bool = False,
+        wandb_logger: WandbLogger | None = None,
     ) -> dict[str, Any]:
         """Execute the sweep: one pipeline run per condition.
 
@@ -143,6 +147,10 @@ class SweepExecutor:
                 Passed through to PipelineRunner.run().
             dry_run: If True, only enumerate conditions and return without
                 executing any pipelines.  Useful for planning / debugging.
+            wandb_logger: Optional WandbLogger instance.  When provided and
+                enabled, piano roll comparison figures are logged to wandb
+                immediately after each condition completes rather than at
+                the end of the whole sweep.
 
         Returns:
             Dict mapping condition label -> pipeline context produced by that run.
@@ -195,6 +203,16 @@ class SweepExecutor:
 
             all_results[condition.label] = context
 
+            # Log piano roll examples to wandb immediately after this
+            # condition completes so images appear as the sweep progresses.
+            if wandb_logger is not None and wandb_logger.enabled:
+                self._log_visual_examples(
+                    wandb_logger=wandb_logger,
+                    condition_label=condition.label,
+                    context=context,
+                    condition_index=i,
+                )
+
             # Free GPU memory between conditions to prevent OOM when
             # sweeping across multiple VAEs sequentially.
             self._free_gpu_memory()
@@ -218,6 +236,135 @@ class SweepExecutor:
                 torch.cuda.empty_cache()
         except ImportError:
             pass
+
+    def _log_visual_examples(
+        self,
+        wandb_logger: WandbLogger,
+        condition_label: str,
+        context: dict[str, Any],
+        condition_index: int,
+        max_examples: int = 4,
+    ) -> None:
+        """Generate and log GT vs reconstructed piano roll figures to wandb.
+
+        Handles both the chunked pipeline path (where ``_visual_examples`` is
+        explicitly stored in context) and the non-chunked path (where ``images``
+        and ``reconstructed_bars`` are present in context).
+
+        Figures are closed immediately after logging to prevent memory leaks.
+        All exceptions are caught and logged at WARNING level — image logging
+        must never abort a sweep.
+
+        Args:
+            wandb_logger: Active WandbLogger instance.
+            condition_label: Human-readable label for this sweep condition.
+            context: Pipeline context dict returned by ``_run_condition``.
+            condition_index: Zero-based index of this condition (used as
+                wandb step so images are associated with the right point).
+            max_examples: Maximum number of bar figures to log per VAE.
+        """
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            from midi_vae.visualization.piano_roll import plot_gt_vs_recon
+        except ImportError as exc:
+            logger.warning(
+                "_log_visual_examples: import failed, skipping image logging: %s", exc
+            )
+            return
+
+        safe_label = condition_label.replace("/", "_").replace(" ", "_")
+
+        # ------------------------------------------------------------------
+        # Build visual_examples dict from whatever is available in context.
+        # Priority: explicit _visual_examples key (chunked path) first, then
+        # fall back to images + reconstructed_bars (non-chunked path).
+        # ------------------------------------------------------------------
+        visual_examples: dict[str, list[tuple]] = {}
+
+        if "_visual_examples" in context:
+            # Chunked path: already collected during chunk processing.
+            # Structure: {vae_name: [(bar_id, gt_tensor, recon_tensor, channel_strategy), ...]}
+            visual_examples = context["_visual_examples"]
+        else:
+            # Non-chunked path: build from images and reconstructed_bars.
+            images = context.get("images", [])
+            reconstructed_bars = context.get("reconstructed_bars", {})
+
+            if images and reconstructed_bars:
+                gt_lookup = {img.bar_id: img for img in images}
+                for vae_name, recon_list in reconstructed_bars.items():
+                    examples = []
+                    for recon in recon_list:
+                        if len(examples) >= max_examples:
+                            break
+                        gt_img = gt_lookup.get(recon.bar_id)
+                        if gt_img is None:
+                            continue
+                        examples.append((
+                            recon.bar_id,
+                            gt_img.image,
+                            recon.recon_image,
+                            gt_img.channel_strategy,
+                        ))
+                    if examples:
+                        visual_examples[vae_name] = examples
+            else:
+                logger.debug(
+                    "_log_visual_examples: no visual data available for condition '%s' "
+                    "(chunked run freed tensors or pipeline produced no reconstructions)",
+                    condition_label,
+                )
+                return
+
+        if not visual_examples:
+            logger.debug(
+                "_log_visual_examples: visual_examples is empty for condition '%s'",
+                condition_label,
+            )
+            return
+
+        total_logged = 0
+        try:
+            for vae_name, examples in visual_examples.items():
+                for i, entry in enumerate(examples[:max_examples]):
+                    bar_id, gt_tensor, recon_tensor, channel_strategy = entry
+                    try:
+                        fig = plot_gt_vs_recon(
+                            gt_image=gt_tensor,
+                            recon_image=recon_tensor,
+                            bar_id=bar_id,
+                            vae_name=vae_name,
+                            channel_strategy=channel_strategy,
+                        )
+                        key = f"examples/{safe_label}/{vae_name}/bar_{i}"
+                        wandb_logger.log_image(key, fig, step=condition_index)
+                        plt.close(fig)
+                        total_logged += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "_log_visual_examples: failed to log figure for bar '%s' "
+                            "(VAE '%s', condition '%s'): %s",
+                            bar_id,
+                            vae_name,
+                            condition_label,
+                            exc,
+                            exc_info=True,
+                        )
+
+            logger.info(
+                "_log_visual_examples: logged %d piano roll figure(s) for condition '%s'",
+                total_logged,
+                condition_label,
+            )
+        except Exception as exc:
+            logger.warning(
+                "_log_visual_examples: unexpected error for condition '%s': %s",
+                condition_label,
+                exc,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Helpers

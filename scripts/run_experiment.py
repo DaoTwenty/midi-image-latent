@@ -675,6 +675,7 @@ def main() -> int:
         results = executor.run(
             resume_from=args.resume_from,
             dry_run=False,
+            wandb_logger=wandb_logger,  # images are logged per-condition inside the sweep
         )
         # Clean GPU memory after the sweep completes
         _free_gpu_memory()
@@ -736,11 +737,9 @@ def main() -> int:
             ]
             wandb_logger.log_table("sweep_results", columns=columns, data=rows)
 
-        # Log example piano roll comparisons (GT vs reconstructed)
-        try:
-            _log_piano_roll_examples(wandb_logger, results)
-        except Exception as exc:
-            logger.warning("Failed to log piano roll examples: %s", exc)
+        # Note: piano roll image logging is now handled per-condition inside
+        # SweepExecutor.run() via _log_visual_examples(), so images appear in
+        # wandb as the sweep progresses rather than only at the very end.
 
         # Log final summary
         wandb_logger.log_summary({
