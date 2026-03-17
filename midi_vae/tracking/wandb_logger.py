@@ -229,6 +229,7 @@ class WandbLogger:
         self,
         key: str,
         figure: Any,
+        step: int | None = None,
     ) -> None:
         """Log a matplotlib Figure as a wandb Image.
 
@@ -240,6 +241,8 @@ class WandbLogger:
             key: Metric key to use in the wandb dashboard (e.g.
                 ``"examples/my_condition/bar_0"``).
             figure: A ``matplotlib.figure.Figure`` object to upload.
+            step: Optional global step number to associate this image with
+                a specific point in the sweep (e.g. condition index).
         """
         if not self._enabled or self._run is None:
             return
@@ -247,7 +250,10 @@ class WandbLogger:
         try:
             import wandb
 
-            self._run.log({key: wandb.Image(figure)})
+            log_kwargs: dict[str, Any] = {}
+            if step is not None:
+                log_kwargs["step"] = step
+            self._run.log({key: wandb.Image(figure)}, **log_kwargs)
         except Exception as exc:
             logger.warning("WandbLogger: failed to log image '%s': %s", key, exc)
 
