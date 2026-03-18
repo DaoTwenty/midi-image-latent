@@ -29,13 +29,16 @@ from midi_vae.config import (
     TrackingConfig,
     VAEConfig,
 )
+from midi_vae.models.vae_wrapper import FrozenImageVAE
+import midi_vae.models.vae_registry  # noqa: F401 — trigger registration of all VAEs
 from midi_vae.pipelines.base import PipelineRunner, PipelineStage
 from midi_vae.pipelines.detect import DetectStage
 from midi_vae.pipelines.encode import EncodeStage
 from midi_vae.pipelines.decode import DecodeStage
 from midi_vae.pipelines.evaluate import EvaluateStage
-from midi_vae.pipelines.ingest import IngestStage
+from midi_vae.pipelines.ingest import IngestStage, iter_chunks
 from midi_vae.pipelines.render import RenderStage
+from midi_vae.registry import ComponentRegistry
 from midi_vae.tracking.experiment import ExperimentTracker
 
 logger = logging.getLogger(__name__)
@@ -362,60 +365,86 @@ class SweepExecutor:
             logger.warning("_run_condition: IngestStage produced no bars — skipping chunked processing")
             return ingest_context
 
+        # Compute global bar cap from config to avoid processing far more bars
+        # than intended (bars_per_instrument limit acts per-file, not globally).
+        instruments = list(config.data.instruments) if config.data.instruments else []
+        max_bars: int | None = None
+        if config.data.bars_per_instrument and instruments:
+            max_bars = config.data.bars_per_instrument * len(instruments)
+            logger.info(
+                "_run_condition: global bar cap = %d (%d instruments × %d bars_per_instrument)",
+                max_bars,
+                len(instruments),
+                config.data.bars_per_instrument,
+            )
+
         total_bars = len(all_bars)
-        n_chunks = (total_bars + chunk_size - 1) // chunk_size
+        capped_bars = min(total_bars, max_bars) if max_bars is not None else total_bars
+        n_chunks = (capped_bars + chunk_size - 1) // chunk_size
         logger.info(
-            "_run_condition: %d bars split into %d chunk(s) of up to %d",
+            "_run_condition: %d bars (capped at %d) split into %d chunk(s) of up to %d",
             total_bars,
+            capped_bars,
             n_chunks,
             chunk_size,
         )
 
-        # Stages that run on each chunk (excludes IngestStage).
-        chunk_stage_classes = [
-            RenderStage,
-            EncodeStage,
-            DecodeStage,
-            DetectStage,
-            EvaluateStage,
+        # ------------------------------------------------------------------
+        # Pre-load VAE instances once — avoids reloading weights per chunk.
+        # ------------------------------------------------------------------
+        vae_instances: dict[str, FrozenImageVAE] = {}
+        for vae_cfg in config.vaes:
+            try:
+                vae_cls = ComponentRegistry.get("vae", vae_cfg.name)
+                vae = vae_cls(vae_cfg, device=config.device)
+                vae.ensure_loaded()
+                vae_instances[vae_cfg.name] = vae
+                logger.info("_run_condition: pre-loaded VAE '%s'", vae_cfg.name)
+            except Exception as exc:
+                logger.warning(
+                    "_run_condition: failed to pre-load VAE '%s': %s", vae_cfg.name, exc
+                )
+
+        # ------------------------------------------------------------------
+        # Instantiate chunk stages once — stateless stages are safe to reuse.
+        # ------------------------------------------------------------------
+        chunk_stages: list[PipelineStage] = [
+            RenderStage(config),
+            EncodeStage(config),
+            DecodeStage(config),
+            DetectStage(config),
+            EvaluateStage(config),
         ]
-        chunk_stage_classes.extend(type(s) for s in self._extra_stages)
+        chunk_stages.extend(self._extra_stages)
+
+        chunk_runner = PipelineRunner(
+            chunk_stages, config, cache_dir=None  # no caching for chunks
+        )
+        if chunk_runner._execution_order is None:
+            chunk_runner._execution_order = chunk_runner._topological_sort()
 
         # Accumulators: per-VAE list of per-bar metric dicts.
         accumulated_metrics: dict[str, list[dict[str, float]]] = {}
 
-        for chunk_idx in range(n_chunks):
-            start = chunk_idx * chunk_size
-            end = min(start + chunk_size, total_bars)
-            chunk_bars = all_bars[start:end]
-
+        for chunk_idx, chunk_bars in enumerate(
+            iter_chunks(all_bars, chunk_size, max_bars=max_bars)
+        ):
             logger.info(
-                "Processing chunk %d/%d (bars %d-%d)",
+                "Processing chunk %d/%d (%d bars)",
                 chunk_idx + 1,
                 n_chunks,
-                start + 1,
-                end,
+                len(chunk_bars),
             )
 
-            # Build a fresh context seeded with this chunk's bars.
-            chunk_context: dict[str, Any] = {"bars": chunk_bars}
-
-            # Instantiate fresh stage objects for each chunk so that any
-            # internal state (e.g. lazy-built detector) does not leak
-            # across chunks.
-            chunk_stages: list[PipelineStage] = [
-                cls(config) for cls in chunk_stage_classes
-            ]
-
-            chunk_runner = PipelineRunner(
-                chunk_stages, config, cache_dir=None  # no caching for chunks
-            )
+            # Build a fresh context seeded with this chunk's bars and the
+            # pre-loaded VAE instances so EncodeStage/DecodeStage reuse them.
+            chunk_context: dict[str, Any] = {
+                "bars": chunk_bars,
+                "_vae_instances": vae_instances,
+            }
 
             # Run only the non-ingest stages; ingest output is already in
             # chunk_context so we skip IngestStage by not including it.
-            if chunk_runner._execution_order is None:
-                chunk_runner._execution_order = chunk_runner._topological_sort()
-
             for stage in chunk_runner._execution_order:
                 stage_name = stage.name
                 logger.info("[RUN chunk %d/%d] %s", chunk_idx + 1, n_chunks, stage_name)
@@ -436,12 +465,16 @@ class SweepExecutor:
                 accumulated_metrics.setdefault(vae_name, []).extend(bar_dicts)
 
             # Explicitly release heavy tensor data so Python/CUDA can GC them
-            # before the next chunk is rendered.
-            for heavy_key in ("images", "latents", "recon_images", "reconstructed_bars", "_vae_instances"):
+            # before the next chunk is rendered.  Do NOT pop _vae_instances —
+            # we keep them alive across chunks for reuse.
+            for heavy_key in ("images", "latents", "recon_images", "reconstructed_bars"):
                 chunk_context.pop(heavy_key, None)
             del chunk_context
             gc.collect()
-            self._free_gpu_memory()
+
+        # After all chunks complete, release the VAE instances and free GPU memory.
+        del vae_instances
+        self._free_gpu_memory()
 
         # ------------------------------------------------------------------ #
         # Aggregate accumulated per-bar metrics into a final summary.         #

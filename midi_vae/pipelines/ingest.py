@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 from midi_vae.config import ExperimentConfig
 from midi_vae.data.preprocessing import MidiIngestor
@@ -21,6 +21,36 @@ from midi_vae.data.types import BarData
 from midi_vae.pipelines.base import PipelineStage, StageIO, compute_hash
 
 logger = logging.getLogger(__name__)
+
+
+def iter_chunks(
+    bars: list[Any],
+    chunk_size: int,
+    max_bars: int | None = None,
+) -> "Generator[list[Any], None, None]":
+    """Yield successive chunks from *bars*, stopping at *max_bars* total.
+
+    Args:
+        bars: Full list of BarData (or any items) to iterate over.
+        chunk_size: Maximum number of items per yielded chunk.
+        max_bars: Hard cap on the total number of items yielded across all
+            chunks.  If None, all items are yielded.  When the cap is reached
+            mid-chunk the chunk is truncated and iteration stops.
+
+    Yields:
+        Successive sub-lists of *bars* each of length <= *chunk_size*.
+    """
+    total_yielded = 0
+    for start in range(0, len(bars), chunk_size):
+        if max_bars is not None and total_yielded >= max_bars:
+            return
+        chunk = bars[start : start + chunk_size]
+        if max_bars is not None:
+            remaining = max_bars - total_yielded
+            chunk = chunk[:remaining]
+        total_yielded += len(chunk)
+        yield chunk
+
 
 # Map dataset name to glob pattern for the raw files
 _DATASET_GLOB: dict[str, str] = {
