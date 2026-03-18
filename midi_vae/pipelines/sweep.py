@@ -20,10 +20,7 @@ import logging
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from midi_vae.tracking.wandb_logger import WandbLogger
+from typing import Any
 
 from midi_vae.config import (
     ExperimentConfig,
@@ -32,13 +29,16 @@ from midi_vae.config import (
     TrackingConfig,
     VAEConfig,
 )
+from midi_vae.models.vae_wrapper import FrozenImageVAE
+import midi_vae.models.vae_registry  # noqa: F401 — trigger registration of all VAEs
 from midi_vae.pipelines.base import PipelineRunner, PipelineStage
 from midi_vae.pipelines.detect import DetectStage
 from midi_vae.pipelines.encode import EncodeStage
 from midi_vae.pipelines.decode import DecodeStage
 from midi_vae.pipelines.evaluate import EvaluateStage
-from midi_vae.pipelines.ingest import IngestStage
+from midi_vae.pipelines.ingest import IngestStage, iter_chunks
 from midi_vae.pipelines.render import RenderStage
+from midi_vae.registry import ComponentRegistry
 from midi_vae.tracking.experiment import ExperimentTracker
 
 logger = logging.getLogger(__name__)
@@ -138,7 +138,6 @@ class SweepExecutor:
         self,
         resume_from: str | None = None,
         dry_run: bool = False,
-        wandb_logger: WandbLogger | None = None,
     ) -> dict[str, Any]:
         """Execute the sweep: one pipeline run per condition.
 
@@ -147,10 +146,6 @@ class SweepExecutor:
                 Passed through to PipelineRunner.run().
             dry_run: If True, only enumerate conditions and return without
                 executing any pipelines.  Useful for planning / debugging.
-            wandb_logger: Optional WandbLogger instance.  When provided and
-                enabled, piano roll comparison figures are logged to wandb
-                immediately after each condition completes rather than at
-                the end of the whole sweep.
 
         Returns:
             Dict mapping condition label -> pipeline context produced by that run.
@@ -203,16 +198,6 @@ class SweepExecutor:
 
             all_results[condition.label] = context
 
-            # Log piano roll examples to wandb immediately after this
-            # condition completes so images appear as the sweep progresses.
-            if wandb_logger is not None and wandb_logger.enabled:
-                self._log_visual_examples(
-                    wandb_logger=wandb_logger,
-                    condition_label=condition.label,
-                    context=context,
-                    condition_index=i,
-                )
-
             # Free GPU memory between conditions to prevent OOM when
             # sweeping across multiple VAEs sequentially.
             self._free_gpu_memory()
@@ -236,135 +221,6 @@ class SweepExecutor:
                 torch.cuda.empty_cache()
         except ImportError:
             pass
-
-    def _log_visual_examples(
-        self,
-        wandb_logger: WandbLogger,
-        condition_label: str,
-        context: dict[str, Any],
-        condition_index: int,
-        max_examples: int = 4,
-    ) -> None:
-        """Generate and log GT vs reconstructed piano roll figures to wandb.
-
-        Handles both the chunked pipeline path (where ``_visual_examples`` is
-        explicitly stored in context) and the non-chunked path (where ``images``
-        and ``reconstructed_bars`` are present in context).
-
-        Figures are closed immediately after logging to prevent memory leaks.
-        All exceptions are caught and logged at WARNING level — image logging
-        must never abort a sweep.
-
-        Args:
-            wandb_logger: Active WandbLogger instance.
-            condition_label: Human-readable label for this sweep condition.
-            context: Pipeline context dict returned by ``_run_condition``.
-            condition_index: Zero-based index of this condition (used as
-                wandb step so images are associated with the right point).
-            max_examples: Maximum number of bar figures to log per VAE.
-        """
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-            from midi_vae.visualization.piano_roll import plot_gt_vs_recon
-        except ImportError as exc:
-            logger.warning(
-                "_log_visual_examples: import failed, skipping image logging: %s", exc
-            )
-            return
-
-        safe_label = condition_label.replace("/", "_").replace(" ", "_")
-
-        # ------------------------------------------------------------------
-        # Build visual_examples dict from whatever is available in context.
-        # Priority: explicit _visual_examples key (chunked path) first, then
-        # fall back to images + reconstructed_bars (non-chunked path).
-        # ------------------------------------------------------------------
-        visual_examples: dict[str, list[tuple]] = {}
-
-        if "_visual_examples" in context:
-            # Chunked path: already collected during chunk processing.
-            # Structure: {vae_name: [(bar_id, gt_tensor, recon_tensor, channel_strategy), ...]}
-            visual_examples = context["_visual_examples"]
-        else:
-            # Non-chunked path: build from images and reconstructed_bars.
-            images = context.get("images", [])
-            reconstructed_bars = context.get("reconstructed_bars", {})
-
-            if images and reconstructed_bars:
-                gt_lookup = {img.bar_id: img for img in images}
-                for vae_name, recon_list in reconstructed_bars.items():
-                    examples = []
-                    for recon in recon_list:
-                        if len(examples) >= max_examples:
-                            break
-                        gt_img = gt_lookup.get(recon.bar_id)
-                        if gt_img is None:
-                            continue
-                        examples.append((
-                            recon.bar_id,
-                            gt_img.image,
-                            recon.recon_image,
-                            gt_img.channel_strategy,
-                        ))
-                    if examples:
-                        visual_examples[vae_name] = examples
-            else:
-                logger.debug(
-                    "_log_visual_examples: no visual data available for condition '%s' "
-                    "(chunked run freed tensors or pipeline produced no reconstructions)",
-                    condition_label,
-                )
-                return
-
-        if not visual_examples:
-            logger.debug(
-                "_log_visual_examples: visual_examples is empty for condition '%s'",
-                condition_label,
-            )
-            return
-
-        total_logged = 0
-        try:
-            for vae_name, examples in visual_examples.items():
-                for i, entry in enumerate(examples[:max_examples]):
-                    bar_id, gt_tensor, recon_tensor, channel_strategy = entry
-                    try:
-                        fig = plot_gt_vs_recon(
-                            gt_image=gt_tensor,
-                            recon_image=recon_tensor,
-                            bar_id=bar_id,
-                            vae_name=vae_name,
-                            channel_strategy=channel_strategy,
-                        )
-                        key = f"examples/{safe_label}/{vae_name}/bar_{i}"
-                        wandb_logger.log_image(key, fig, step=condition_index)
-                        plt.close(fig)
-                        total_logged += 1
-                    except Exception as exc:
-                        logger.warning(
-                            "_log_visual_examples: failed to log figure for bar '%s' "
-                            "(VAE '%s', condition '%s'): %s",
-                            bar_id,
-                            vae_name,
-                            condition_label,
-                            exc,
-                            exc_info=True,
-                        )
-
-            logger.info(
-                "_log_visual_examples: logged %d piano roll figure(s) for condition '%s'",
-                total_logged,
-                condition_label,
-            )
-        except Exception as exc:
-            logger.warning(
-                "_log_visual_examples: unexpected error for condition '%s': %s",
-                condition_label,
-                exc,
-                exc_info=True,
-            )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -509,66 +365,86 @@ class SweepExecutor:
             logger.warning("_run_condition: IngestStage produced no bars — skipping chunked processing")
             return ingest_context
 
+        # Compute global bar cap from config to avoid processing far more bars
+        # than intended (bars_per_instrument limit acts per-file, not globally).
+        instruments = list(config.data.instruments) if config.data.instruments else []
+        max_bars: int | None = None
+        if config.data.bars_per_instrument and instruments:
+            max_bars = config.data.bars_per_instrument * len(instruments)
+            logger.info(
+                "_run_condition: global bar cap = %d (%d instruments × %d bars_per_instrument)",
+                max_bars,
+                len(instruments),
+                config.data.bars_per_instrument,
+            )
+
         total_bars = len(all_bars)
-        n_chunks = (total_bars + chunk_size - 1) // chunk_size
+        capped_bars = min(total_bars, max_bars) if max_bars is not None else total_bars
+        n_chunks = (capped_bars + chunk_size - 1) // chunk_size
         logger.info(
-            "_run_condition: %d bars split into %d chunk(s) of up to %d",
+            "_run_condition: %d bars (capped at %d) split into %d chunk(s) of up to %d",
             total_bars,
+            capped_bars,
             n_chunks,
             chunk_size,
         )
 
-        # Stages that run on each chunk (excludes IngestStage).
-        chunk_stage_classes = [
-            RenderStage,
-            EncodeStage,
-            DecodeStage,
-            DetectStage,
-            EvaluateStage,
+        # ------------------------------------------------------------------
+        # Pre-load VAE instances once — avoids reloading weights per chunk.
+        # ------------------------------------------------------------------
+        vae_instances: dict[str, FrozenImageVAE] = {}
+        for vae_cfg in config.vaes:
+            try:
+                vae_cls = ComponentRegistry.get("vae", vae_cfg.name)
+                vae = vae_cls(vae_cfg, device=config.device)
+                vae.ensure_loaded()
+                vae_instances[vae_cfg.name] = vae
+                logger.info("_run_condition: pre-loaded VAE '%s'", vae_cfg.name)
+            except Exception as exc:
+                logger.warning(
+                    "_run_condition: failed to pre-load VAE '%s': %s", vae_cfg.name, exc
+                )
+
+        # ------------------------------------------------------------------
+        # Instantiate chunk stages once — stateless stages are safe to reuse.
+        # ------------------------------------------------------------------
+        chunk_stages: list[PipelineStage] = [
+            RenderStage(config),
+            EncodeStage(config),
+            DecodeStage(config),
+            DetectStage(config),
+            EvaluateStage(config),
         ]
-        chunk_stage_classes.extend(type(s) for s in self._extra_stages)
+        chunk_stages.extend(self._extra_stages)
+
+        chunk_runner = PipelineRunner(
+            chunk_stages, config, cache_dir=None  # no caching for chunks
+        )
+        if chunk_runner._execution_order is None:
+            chunk_runner._execution_order = chunk_runner._topological_sort()
 
         # Accumulators: per-VAE list of per-bar metric dicts.
         accumulated_metrics: dict[str, list[dict[str, float]]] = {}
 
-        # Collect a few example (GT, recon) pairs for visualization before
-        # they are freed from each chunk context.
-        max_visual_examples = 4
-        # vae_name -> [(bar_id, gt_tensor, recon_tensor, channel_strategy), ...]
-        visual_examples: dict[str, list[tuple[str, Any, Any, str]]] = {}
-
-        for chunk_idx in range(n_chunks):
-            start = chunk_idx * chunk_size
-            end = min(start + chunk_size, total_bars)
-            chunk_bars = all_bars[start:end]
-
+        for chunk_idx, chunk_bars in enumerate(
+            iter_chunks(all_bars, chunk_size, max_bars=max_bars)
+        ):
             logger.info(
-                "Processing chunk %d/%d (bars %d-%d)",
+                "Processing chunk %d/%d (%d bars)",
                 chunk_idx + 1,
                 n_chunks,
-                start + 1,
-                end,
+                len(chunk_bars),
             )
 
-            # Build a fresh context seeded with this chunk's bars.
-            chunk_context: dict[str, Any] = {"bars": chunk_bars}
-
-            # Instantiate fresh stage objects for each chunk so that any
-            # internal state (e.g. lazy-built detector) does not leak
-            # across chunks.
-            chunk_stages: list[PipelineStage] = [
-                cls(config) for cls in chunk_stage_classes
-            ]
-
-            chunk_runner = PipelineRunner(
-                chunk_stages, config, cache_dir=None  # no caching for chunks
-            )
+            # Build a fresh context seeded with this chunk's bars and the
+            # pre-loaded VAE instances so EncodeStage/DecodeStage reuse them.
+            chunk_context: dict[str, Any] = {
+                "bars": chunk_bars,
+                "_vae_instances": vae_instances,
+            }
 
             # Run only the non-ingest stages; ingest output is already in
             # chunk_context so we skip IngestStage by not including it.
-            if chunk_runner._execution_order is None:
-                chunk_runner._execution_order = chunk_runner._topological_sort()
-
             for stage in chunk_runner._execution_order:
                 stage_name = stage.name
                 logger.info("[RUN chunk %d/%d] %s", chunk_idx + 1, n_chunks, stage_name)
@@ -588,38 +464,17 @@ class SweepExecutor:
             for vae_name, bar_dicts in chunk_metrics.items():
                 accumulated_metrics.setdefault(vae_name, []).extend(bar_dicts)
 
-            # Collect visual examples from this chunk before the heavy keys
-            # are freed.  Only gather up to max_visual_examples per VAE and
-            # only until every known VAE is saturated.
-            chunk_images: list[Any] = chunk_context.get("images", [])
-            chunk_recons: dict[str, list[Any]] = chunk_context.get("reconstructed_bars", {})
-            if chunk_images and chunk_recons:
-                gt_lookup = {img.bar_id: img for img in chunk_images}
-                for vae_name, recon_list in chunk_recons.items():
-                    existing = visual_examples.setdefault(vae_name, [])
-                    if len(existing) >= max_visual_examples:
-                        continue
-                    for recon in recon_list:
-                        if len(existing) >= max_visual_examples:
-                            break
-                        gt_img = gt_lookup.get(recon.bar_id)
-                        if gt_img is None:
-                            continue
-                        # Clone tensors so they survive after chunk_context is freed.
-                        existing.append((
-                            recon.bar_id,
-                            gt_img.image.clone(),
-                            recon.recon_image.clone(),
-                            gt_img.channel_strategy,
-                        ))
-
             # Explicitly release heavy tensor data so Python/CUDA can GC them
-            # before the next chunk is rendered.
-            for heavy_key in ("images", "latents", "recon_images", "reconstructed_bars", "_vae_instances"):
+            # before the next chunk is rendered.  Do NOT pop _vae_instances —
+            # we keep them alive across chunks for reuse.
+            for heavy_key in ("images", "latents", "recon_images", "reconstructed_bars"):
                 chunk_context.pop(heavy_key, None)
             del chunk_context
             gc.collect()
-            self._free_gpu_memory()
+
+        # After all chunks complete, release the VAE instances and free GPU memory.
+        del vae_instances
+        self._free_gpu_memory()
 
         # ------------------------------------------------------------------ #
         # Aggregate accumulated per-bar metrics into a final summary.         #
@@ -646,5 +501,4 @@ class SweepExecutor:
             "bars": all_bars,
             "metrics": accumulated_metrics,
             "metrics_summary": final_metrics_summary,
-            "_visual_examples": visual_examples,
         }

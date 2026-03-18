@@ -1,0 +1,17 @@
+## Override: switch any experiment to POP909 dataset
+## Usage: python scripts/run_experiment.py <CONFIG> --override-config configs/overrides/use_pop909.yaml
+##
+## POP909 — 909 pop songs (.mid extension, mostly 2/4 time)
+## All tracks map to "piano" instrument (MIDI program 0).
+
+data:
+  dataset: pop909
+  instruments:
+    - piano
+  bars_per_instrument: 5000
+  min_notes_per_bar: 2
+  time_steps: 96
+  target_resolution: [128, 128]
+
+paths:
+  data_root: data/pop909

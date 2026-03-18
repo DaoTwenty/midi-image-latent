@@ -81,7 +81,12 @@ class EncodeStage(PipelineStage):
             return {"latents": {}}
 
         latents: dict[str, list[LatentEncoding]] = {}
-        vae_instances: dict[str, FrozenImageVAE] = {}
+
+        # Reuse pre-loaded VAE instances from context if available (e.g. injected
+        # by SweepExecutor._run_condition to avoid reloading weights per chunk).
+        vae_instances: dict[str, FrozenImageVAE] = dict(
+            context.get("_vae_instances") or {}
+        )
 
         for vae_cfg in vae_cfgs:
             vae_name = vae_cfg.name
@@ -91,14 +96,22 @@ class EncodeStage(PipelineStage):
                 vae_name,
             )
 
-            try:
-                vae_cls = ComponentRegistry.get("vae", vae_name)
-                vae: FrozenImageVAE = vae_cls(vae_cfg, device=self.config.device)
-            except KeyError:
-                logger.error(
-                    "EncodeStage: VAE '%s' not registered — skipping", vae_name
+            # Try to reuse an already-loaded VAE from context; fall back to fresh load
+            vae: FrozenImageVAE | None = vae_instances.get(vae_name)
+            if vae is not None:
+                logger.info(
+                    "EncodeStage: reusing pre-loaded VAE '%s' from context", vae_name
                 )
-                continue
+            else:
+                try:
+                    vae_cls = ComponentRegistry.get("vae", vae_name)
+                    vae = vae_cls(vae_cfg, device=self.config.device)
+                    vae_instances[vae_name] = vae
+                except KeyError:
+                    logger.error(
+                        "EncodeStage: VAE '%s' not registered — skipping", vae_name
+                    )
+                    continue
 
             encodings: list[LatentEncoding] = self._encode_with_vae(
                 vae, images, vae_cfg.batch_size, vae_cfg.latent_type
