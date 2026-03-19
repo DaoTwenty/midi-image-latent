@@ -46,3 +46,6 @@ htmlcov/
 
 # Data
 data/
+
+# Benchmark results (JSON files with timing data — not committed)
+benchmarks/results/*.json

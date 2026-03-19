@@ -21,6 +21,7 @@ import logging
 import os
 import random
 import warnings
+import multiprocessing as _mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterator
@@ -213,7 +214,11 @@ class MidiIngestor:
             if suffix == ".npz":
                 return self._ingest_npz(path)
             elif suffix in {".mid", ".midi"}:
-                return self._ingest_midi(path)
+                # Try symusic (Rust, fast) first, fall back to pretty_midi
+                try:
+                    return self._ingest_midi_symusic(path)
+                except Exception:  # pylint: disable=broad-except
+                    return self._ingest_midi(path)
             else:
                 logger.warning("Unsupported file type '%s', skipping: %s", suffix, path)
                 return []
@@ -271,7 +276,11 @@ class MidiIngestor:
         sorted_paths = sorted(paths)
         results: dict[int, list[BarData]] = {}
 
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Use 'spawn' (or 'forkserver') context to avoid fork-copying
+        # the parent's full address space into each worker — prevents OOM
+        # when the parent holds large datasets in memory.
+        ctx = _mp.get_context("forkserver")
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
             future_to_idx = {
                 executor.submit(_ingest_file_worker, str(p), ingestor_kwargs): i
                 for i, p in enumerate(sorted_paths)
@@ -502,6 +511,126 @@ class MidiIngestor:
             all_bars.extend(bars)
 
         return all_bars
+
+    # ── Standard MIDI via symusic (.mid) ──────────────────────────────────────
+
+    def _ingest_midi_symusic(self, path: Path) -> list[BarData]:
+        """Load a .mid file using symusic (Rust-based, ~10-45x faster than pretty_midi).
+
+        Args:
+            path: Path to the .mid file.
+
+        Returns:
+            List of BarData objects.
+
+        Raises:
+            ImportError: If symusic is not installed.
+            Exception: On parse errors; caller should fall back to pretty_midi.
+        """
+        try:
+            import symusic
+        except ImportError as exc:
+            raise ImportError(
+                "symusic is required for fast MIDI ingestion. "
+                "Install it with: pip install symusic"
+            ) from exc
+
+        s = symusic.Score(str(path))
+        song_id = path.stem
+
+        # Detect time signature; None means unsupported
+        time_sig = self._detect_time_signature_symusic(s)
+        if time_sig is None:
+            logger.debug("Song %s has unsupported time signature, skipping", song_id)
+            return []
+
+        # Extract tempo (BPM) from first tempo event; default 120
+        tempo = 120.0
+        if s.tempos:
+            tempo = float(s.tempos[0].qpm)
+
+        beats_per_bar = time_sig[0]
+        steps_per_bar = self.beat_resolution * beats_per_bar
+
+        # Scale factor: convert ticks to our resolution steps
+        ticks_per_quarter = s.ticks_per_quarter
+        if ticks_per_quarter <= 0:
+            ticks_per_quarter = 480  # sensible default
+        scale = self.beat_resolution / ticks_per_quarter
+
+        all_bars: list[BarData] = []
+
+        for track in s.tracks:
+            if not track.notes:
+                continue
+
+            instrument_name = self._map_program_to_instrument(track.program, track.is_drum)
+
+            if self.instruments is not None and instrument_name not in self.instruments:
+                continue
+
+            # Build piano roll from notes directly (fast, exact)
+            end_tick = max(n.time + n.duration for n in track.notes)
+            total_steps = int(end_tick * scale) + 1
+            roll = np.zeros((128, total_steps), dtype=np.float32)
+
+            for n in track.notes:
+                start_step = int(n.time * scale)
+                end_step = int((n.time + n.duration) * scale)
+                pitch = max(0, min(127, n.pitch))
+                roll[pitch, start_step:min(end_step, total_steps)] = float(n.velocity)
+
+            if roll.max() == 0:
+                logger.debug("Track '%s' in %s is silent, skipping", track.name, path)
+                continue
+
+            bar_arrays = _segment_track(roll, steps_per_bar)
+
+            if steps_per_bar != self.time_steps:
+                bar_arrays = [self._resize_time_axis(b, self.time_steps) for b in bar_arrays]
+
+            bars = self._extract_bar_data(
+                bar_arrays=bar_arrays,
+                song_id=song_id,
+                instrument=instrument_name,
+                program_number=track.program,
+                tempo=tempo,
+                time_signature=time_sig,
+            )
+            all_bars.extend(bars)
+
+        return all_bars
+
+    @staticmethod
+    def _detect_time_signature_symusic(score: object) -> tuple[int, int] | None:
+        """Detect the dominant time signature from a symusic Score.
+
+        Accepts common simple time signatures (2/4, 3/4, 4/4, 6/8).
+        Files with only unusual signatures return None.
+
+        Args:
+            score: symusic.Score object.
+
+        Returns:
+            (numerator, denominator) of the dominant time signature,
+            or None if unsupported.
+        """
+        SUPPORTED = {(2, 4), (3, 4), (4, 4), (6, 8)}
+
+        time_sigs = score.time_signatures
+        if not time_sigs:
+            return (4, 4)  # Assume 4/4 if none specified
+
+        first_ts = (time_sigs[0].numerator, time_sigs[0].denominator)
+        if first_ts in SUPPORTED:
+            return first_ts
+
+        for ts in time_sigs:
+            candidate = (ts.numerator, ts.denominator)
+            if candidate in SUPPORTED:
+                return candidate
+
+        return None
 
     @staticmethod
     def _detect_time_signature_midi(pm: object) -> tuple[int, int] | None:

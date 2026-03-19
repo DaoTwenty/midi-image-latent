@@ -138,6 +138,8 @@ class SweepExecutor:
         self,
         resume_from: str | None = None,
         dry_run: bool = False,
+        wandb_logger: Any = None,
+        condition_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Execute the sweep: one pipeline run per condition.
 
@@ -146,6 +148,12 @@ class SweepExecutor:
                 Passed through to PipelineRunner.run().
             dry_run: If True, only enumerate conditions and return without
                 executing any pipelines.  Useful for planning / debugging.
+            wandb_logger: Optional WandbLogger instance for per-condition
+                metric logging.  Unused by SweepExecutor directly but accepted
+                for API compatibility with callers that pass it through.
+            condition_indices: If given, only the conditions at these
+                zero-based indices (into the full conditions list) are run.
+                All other indices are skipped.  None means run all conditions.
 
         Returns:
             Dict mapping condition label -> pipeline context produced by that run.
@@ -163,10 +171,25 @@ class SweepExecutor:
                 "__summary__": {},
             }
 
+        # Build the set of indices to run (None = all).
+        if condition_indices is not None:
+            index_set = set(condition_indices)
+            logger.info(
+                "SweepExecutor: running subset of %d/%d conditions (indices: %s)",
+                len(index_set),
+                len(all_conditions),
+                sorted(index_set),
+            )
+        else:
+            index_set = None
+
         all_results: dict[str, Any] = {}
         aggregated_summary: dict[str, dict[str, float]] = {}
 
         for i, condition in enumerate(all_conditions):
+            if index_set is not None and i not in index_set:
+                logger.debug("SweepExecutor: skipping condition %d — not in subset", i)
+                continue
             logger.info(
                 "SweepExecutor: running condition %d/%d — %s",
                 i + 1,
@@ -205,6 +228,37 @@ class SweepExecutor:
         all_results["__summary__"] = aggregated_summary
         logger.info("SweepExecutor: all conditions complete")
         return all_results
+
+    def run_subset(
+        self,
+        condition_indices: list[int],
+        resume_from: str | None = None,
+        wandb_logger: Any = None,
+    ) -> dict[str, Any]:
+        """Run only the conditions at the given zero-based indices.
+
+        This is the primary entry point for distributed sweep execution: each
+        worker process calls ``run_subset`` with its own slice of the global
+        condition index list.
+
+        Args:
+            condition_indices: Zero-based indices into the list returned by
+                :meth:`conditions`.  Indices outside the valid range are
+                silently ignored.
+            resume_from: Stage name to resume from (passed through to the
+                underlying :meth:`run` call).
+            wandb_logger: Optional WandbLogger for per-condition metric logging.
+
+        Returns:
+            Same structure as :meth:`run` but only containing entries for the
+            requested conditions.
+        """
+        return self.run(
+            resume_from=resume_from,
+            dry_run=False,
+            wandb_logger=wandb_logger,
+            condition_indices=condition_indices,
+        )
 
     @staticmethod
     def _free_gpu_memory() -> None:
