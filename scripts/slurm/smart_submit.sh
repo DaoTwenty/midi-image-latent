@@ -34,7 +34,7 @@ set -euo pipefail
 
 REPO=/scratch/triana24/midi-image-latent
 CONFIG="$REPO/configs/experiments/exp_1a_vae_comparison.yaml"
-ACCOUNT="def-pasquier"
+ACCOUNT="def-pasquier_gpu"
 PYTHON="$REPO/.venv/bin/python"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
@@ -112,37 +112,8 @@ choose_time_limit() {
     fi
 }
 
-# ── Helper: pick the right partition for a given time limit ──────────────────
-pick_partition() {
-    local gpu_type="$1"    # "bynode" or "bygpu"
-    local time_limit="$2"  # HH:MM:SS or D-HH:MM:SS
-
-    # Convert time limit to hours for comparison
-    local hours
-    if [[ "$time_limit" =~ ^([0-9]+)-([0-9]+):([0-9]+):([0-9]+)$ ]]; then
-        hours=$(( ${BASH_REMATCH[1]} * 24 + ${BASH_REMATCH[2]} ))
-    elif [[ "$time_limit" =~ ^([0-9]+):([0-9]+):([0-9]+)$ ]]; then
-        hours=${BASH_REMATCH[1]}
-    else
-        hours=3
-    fi
-
-    local prefix="gpubase_${gpu_type}"
-
-    # Pick the smallest bucket that fits our time limit
-    # b1=3h, b2=12h, b3=24h, b4=72h, b5=168h
-    if [[ $hours -le 3 ]]; then
-        echo "${prefix}_b1"
-    elif [[ $hours -le 12 ]]; then
-        echo "${prefix}_b2"
-    elif [[ $hours -le 24 ]]; then
-        echo "${prefix}_b3"
-    elif [[ $hours -le 72 ]]; then
-        echo "${prefix}_b4"
-    else
-        echo "${prefix}_b5"
-    fi
-}
+# NOTE: We omit --partition from sbatch and let the scheduler auto-select
+# based on GRES type + time limit. This avoids account/partition mismatches.
 
 # =============================================================================
 # MAIN: Probe GPU availability and decide
@@ -197,7 +168,6 @@ GPU_GRES=""        # SLURM --gres string
 NUM_GPUS=1
 NUM_NODES=1
 TASKS_PER_NODE=1
-PARTITION=""
 CPUS_PER_TASK=8
 MEM_PER_CPU="4G"
 MODE=""            # "single", "distributed"
@@ -265,24 +235,13 @@ decide() {
         echo "          (scheduler will start it when a GPU becomes available)"
     fi
 
-    # Choose time and partition
+    # Choose time limit
     local time_limit
     time_limit=$(choose_time_limit $NUM_GPUS)
-
-    if [[ "$GPU_TYPE" == "full" ]]; then
-        PARTITION=$(pick_partition "bynode" "$time_limit")
-    else
-        PARTITION=$(pick_partition "bygpu" "$time_limit")
-    fi
 
     # Override: for single GPU with 36 conditions, we need more time
     if [[ "$MODE" == "single" ]]; then
         time_limit="12:00:00"
-        if [[ "$GPU_TYPE" == "full" ]]; then
-            PARTITION="gpubase_bynode_b2"
-        else
-            PARTITION="gpubase_bygpu_b2"
-        fi
     fi
 
     TIME_LIMIT="$time_limit"
@@ -301,7 +260,6 @@ echo "    GPU type:     $GPU_TYPE ($GPU_GRES)"
 echo "    GPUs:         $NUM_GPUS"
 echo "    Nodes:        $NUM_NODES"
 echo "    Tasks/node:   $TASKS_PER_NODE"
-echo "    Partition:    $PARTITION"
 echo "    Time limit:   $TIME_LIMIT"
 echo "    CPUs/task:    $CPUS_PER_TASK"
 echo "    Mem/CPU:      $MEM_PER_CPU"
@@ -320,7 +278,7 @@ if [[ "$MODE" == "distributed" ]]; then
         sbatch
         --job-name="exp1a-smart"
         --account="$ACCOUNT"
-        --partition="$PARTITION"
+
         --nodes="$NUM_NODES"
         --ntasks-per-node="$TASKS_PER_NODE"
         --gpus-per-task=1
@@ -383,9 +341,11 @@ mkdir -p "$OUTPUT_ROOT/logs"
 
 T_START=$(date +%s)
 
+# Prevent SLURM_MEM_PER_CPU/GPU/NODE mutual exclusion error in srun.
+# sbatch sets SLURM_MEM_PER_CPU; srun with --gpus-per-task can conflict.
+unset SLURM_MEM_PER_CPU SLURM_MEM_PER_GPU SLURM_MEM_PER_NODE
+
 srun \
-    --cpus-per-task="${SLURM_CPUS_PER_TASK:-8}" \
-    --gpus-per-task=1 \
     --output="$OUTPUT_ROOT/logs/rank_%t.log" \
     --error="$OUTPUT_ROOT/logs/rank_%t.log" \
     "$PYTHON" "$REPO/scripts/run_experiment_distributed.py" \
@@ -432,7 +392,7 @@ else
         sbatch
         --job-name="exp1a-smart"
         --account="$ACCOUNT"
-        --partition="$PARTITION"
+
         --nodes=1
         --gpus-per-node="$GPU_GRES"
         --cpus-per-task="$CPUS_PER_TASK"
@@ -512,7 +472,6 @@ else
     echo ""
     echo "============================================================"
     echo "  Submitted job $JOB_ID"
-    echo "  Partition: $PARTITION"
     echo "  GPUs:      $NUM_GPUS x $GPU_TYPE"
     echo "  Mode:      $MODE"
     echo "  Log:       $SCRATCH/midi-image-latent/outputs/logs/exp1a_smart_${JOB_ID}.log"
