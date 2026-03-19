@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import gc
 import itertools
+import json
 import logging
+import os
+import tempfile
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -267,6 +270,9 @@ class SweepExecutor:
                     for kv in summary.values()
                     for k, v in kv.items()
                 }
+                # Write relay file for distributed wandb aggregation (no-op
+                # when MIDI_VAE_WANDB_RELAY_DIR is not set).
+                self._write_relay(i, condition.label, summary)
 
             all_results[condition.label] = context
 
@@ -324,6 +330,66 @@ class SweepExecutor:
                 torch.cuda.empty_cache()
         except ImportError:
             pass
+
+    def _write_relay(
+        self,
+        condition_index: int,
+        label: str,
+        summary: dict[str, Any],
+    ) -> None:
+        """Write a metric relay JSON for the distributed wandb watcher.
+
+        Writes a small JSON file to the shared relay directory so that rank 0's
+        :class:`~midi_vae.tracking.wandb_relay.WandbRelayWatcher` can pick it
+        up and forward the metrics to the single wandb run.
+
+        This method is a no-op unless the environment variable
+        ``MIDI_VAE_WANDB_RELAY_DIR`` is set (i.e. we are in distributed mode).
+
+        The file is written atomically: it is first written to a temporary file
+        in the same directory and then renamed, so the watcher never sees a
+        partial write.
+
+        Args:
+            condition_index: Zero-based index of this condition in the global
+                sweep (used to form a unique, sortable filename).
+            label: Human-readable condition label (e.g.
+                ``"sd15__velocity_only__threshold"``).
+            summary: Nested ``{vae_name: {metric_name: value}}`` dict as
+                produced by :meth:`run`.
+        """
+        relay_dir_str = os.environ.get("MIDI_VAE_WANDB_RELAY_DIR")
+        if not relay_dir_str:
+            return
+
+        relay_dir = Path(relay_dir_str)
+        relay_dir.mkdir(parents=True, exist_ok=True)
+
+        rank = int(os.environ.get("SLURM_PROCID", "0"))
+        relay_file = relay_dir / f"cond_{condition_index:04d}_rank{rank:04d}.json"
+
+        relay_data: dict[str, Any] = {
+            "condition_index": condition_index,
+            "condition_label": label,
+            "rank": rank,
+            "timestamp": time.time(),
+            "metrics_summary": summary,
+        }
+
+        # Atomic write: write to a temp file then rename so the watcher
+        # never observes a partial file.
+        try:
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(relay_dir), suffix=".tmp")
+            with os.fdopen(tmp_fd, "w") as fh:
+                json.dump(relay_data, fh, default=str)
+            Path(tmp_path).rename(relay_file)
+            logger.debug(
+                "_write_relay: wrote relay file %s (rank %d)", relay_file.name, rank
+            )
+        except Exception as exc:
+            logger.warning(
+                "_write_relay: failed to write %s: %s", relay_file, exc
+            )
 
     # ------------------------------------------------------------------
     # Helpers

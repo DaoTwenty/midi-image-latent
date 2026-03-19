@@ -919,6 +919,40 @@ def main() -> int:
 
         raw = _load_raw_config(args)
 
+        # ------------------------------------------------------------------
+        # Relay directory: shared via NFS so all ranks can write to it.
+        # Rank 0 cleans up stale relay files from previous runs.
+        # ------------------------------------------------------------------
+        base_output = OmegaConf.select(raw, "paths.output_root") or "outputs"
+        if args.output_root:
+            base_output = args.output_root
+        relay_dir = Path(base_output) / "_wandb_relay"
+
+        if global_rank == 0:
+            # Remove relay files from any previous run so the watcher starts
+            # with a clean slate and does not re-log stale metrics.
+            if relay_dir.exists():
+                for old_file in relay_dir.glob("cond_*.json"):
+                    try:
+                        old_file.unlink()
+                    except Exception:
+                        pass
+                for old_file in relay_dir.glob("*.tmp"):
+                    try:
+                        old_file.unlink()
+                    except Exception:
+                        pass
+
+        # Export relay dir so SweepExecutor._write_relay can find it.
+        os.environ["MIDI_VAE_WANDB_RELAY_DIR"] = str(relay_dir)
+
+        # ------------------------------------------------------------------
+        # Only rank 0 initialises wandb.  All other ranks disable it so
+        # there is exactly one wandb run for the entire distributed sweep.
+        # ------------------------------------------------------------------
+        if global_rank != 0:
+            OmegaConf.update(raw, "tracking.wandb_enabled", False, merge=True)
+
         # Collect sweep axes
         sweep_detectors = None
         sweep_strategies = None
@@ -959,6 +993,41 @@ def main() -> int:
             len(condition_indices),
         )
 
+        # ------------------------------------------------------------------
+        # Rank 0: create a single wandb run and start the relay watcher.
+        # The WandbLogger is created BEFORE output_root is overridden to a
+        # rank-specific path so the run name reflects the base experiment.
+        # ------------------------------------------------------------------
+        relay_watcher = None
+        sweep_wandb_logger = None
+        if global_rank == 0:
+            wandb_enabled = bool(
+                OmegaConf.select(raw, "tracking.wandb_enabled", default=False)
+            )
+            if wandb_enabled:
+                try:
+                    from midi_vae.tracking.wandb_relay import WandbRelayWatcher
+                    from midi_vae.tracking.wandb_logger import WandbLogger
+
+                    sweep_run_id = (
+                        f"{config.tracking.experiment_name}"
+                        f"_distributed_{time.strftime('%Y%m%d_%H%M%S')}"
+                    )
+                    sweep_wandb_logger = WandbLogger(config, sweep_run_id)
+                    relay_watcher = WandbRelayWatcher(
+                        relay_dir, sweep_wandb_logger, poll_interval=5.0
+                    )
+                    relay_watcher.start()
+                    logger.info(
+                        "Rank 0: started WandbRelayWatcher for run '%s'", sweep_run_id
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Rank 0: failed to start WandbRelayWatcher: %s", exc
+                    )
+                    relay_watcher = None
+                    sweep_wandb_logger = None
+
         # Override output root to be rank-specific
         base_output_root = config.paths.output_root
         rank_output_root = _rank_output_root(base_output_root, global_rank)
@@ -969,7 +1038,7 @@ def main() -> int:
             print(f"ERROR: Config re-validation failed: {exc}", file=sys.stderr)
             return 1
 
-        return _run_worker(
+        rc = _run_worker(
             args=args,
             raw=raw,
             config=config,
@@ -977,6 +1046,16 @@ def main() -> int:
             local_gpu_id=local_gpu_id,
             condition_indices=condition_indices,
         )
+
+        # ------------------------------------------------------------------
+        # Rank 0: stop the relay watcher and close the wandb run.
+        # ------------------------------------------------------------------
+        if relay_watcher is not None:
+            relay_watcher.stop()
+        if sweep_wandb_logger is not None:
+            sweep_wandb_logger.finish()
+
+        return rc
 
     # ------------------------------------------------------------------
     # Single-node launcher path: spawn subprocesses
