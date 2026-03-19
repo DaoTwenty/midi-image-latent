@@ -3,7 +3,7 @@
 #SBATCH --account=def-pasquier
 #SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=12:00:00
 #SBATCH --output=/scratch/triana24/midi-image-latent/outputs/logs/exp1a_full_%j.log
 #SBATCH --error=/scratch/triana24/midi-image-latent/outputs/logs/exp1a_full_%j.log
@@ -59,6 +59,7 @@ if [[ -f "$REPO/.env" ]]; then
     done < <(grep -v '^#' "$REPO/.env" | grep '=')
 fi
 
+export WANDB_MODE=offline
 export WANDB_DIR="$REPO/outputs"
 
 source "$REPO/.venv/bin/activate"
@@ -71,7 +72,6 @@ echo "CUDA devices: $(python -c 'import torch; print(torch.cuda.device_count(), 
 
 python scripts/run_experiment.py \
     configs/experiments/exp_1a_vae_comparison.yaml \
-    --data-root data/lakh \
     --sweep-strategies \
     --log-level INFO
 

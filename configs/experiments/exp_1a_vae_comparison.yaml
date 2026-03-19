@@ -3,7 +3,7 @@
 ## Goal: Find which VAE family produces the most musically useful latent space.
 
 paths:
-  data_root: data/
+  data_root: data/lakh
   output_root: outputs/exp_1a/
   cache_dir: outputs/exp_1a/cache/
 
