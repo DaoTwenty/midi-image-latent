@@ -16,6 +16,7 @@ data:
     - piano
     - strings
   bars_per_instrument: 5000
+  max_bars_total: 25000        # 5 instruments × 5000 — global cap across all files
   min_notes_per_bar: 2
   time_steps: 96
   target_resolution: [128, 128]
@@ -147,4 +148,4 @@ tracking:
 
 seed: 42
 device: cuda
-num_workers: 4
+num_workers: 8

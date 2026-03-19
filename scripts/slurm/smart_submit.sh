@@ -332,6 +332,7 @@ if [[ -f "$REPO/.env" ]]; then
 fi
 
 source "$REPO/.venv/bin/activate"
+cd "$REPO"
 
 echo "Python:     $(which python)"
 echo "HF_HOME:    $HF_HOME"

@@ -537,6 +537,7 @@ class SweepExecutor:
             return {"bars": [], "metrics": {}, "metrics_summary": {}}
 
         num_workers: int = getattr(config, "num_workers", 1)
+        max_bars_total: int | None = getattr(config.data, "max_bars_total", None)
         ingestor = ingest_stage.make_ingestor()
 
         file_batch_size = getattr(
@@ -608,6 +609,17 @@ class SweepExecutor:
 
             total_bars_processed += len(batch_bars)
 
+            # Enforce global bar cap if configured.
+            if max_bars_total is not None and total_bars_processed >= max_bars_total:
+                overshoot = total_bars_processed - max_bars_total
+                if overshoot > 0 and overshoot < len(batch_bars):
+                    batch_bars = batch_bars[: len(batch_bars) - overshoot]
+                    total_bars_processed = max_bars_total
+                logger.info(
+                    "Reached max_bars_total=%d after file batch %d/%d — stopping ingestion",
+                    max_bars_total, fb_idx + 1, n_file_batches,
+                )
+
             # --- Sub-chunk the batch bars through the pipeline ---
             # If pipeline_chunk_size is set, process in smaller slices.
             # Otherwise process the entire file batch at once.
@@ -651,6 +663,10 @@ class SweepExecutor:
             # Release the batch bars before ingesting the next file batch.
             del batch_bars
             gc.collect()
+
+            # Stop iterating file batches if we hit the global bar cap.
+            if max_bars_total is not None and total_bars_processed >= max_bars_total:
+                break
 
         # After all file batches complete, release VAE instances.
         del vae_instances
