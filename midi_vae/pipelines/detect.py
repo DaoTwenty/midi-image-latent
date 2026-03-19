@@ -19,7 +19,7 @@ import logging
 from typing import Any
 
 from midi_vae.config import ExperimentConfig
-from midi_vae.data.types import PianoRollImage, ReconstructedBar
+from midi_vae.data.types import MidiNote, PianoRollImage, ReconstructedBar
 from midi_vae.note_detection.base import NoteDetector
 import midi_vae.note_detection  # noqa: F401 — trigger registration of all detectors
 from midi_vae.pipelines.base import PipelineStage, StageIO, compute_hash
@@ -105,38 +105,101 @@ class DetectStage(PipelineStage):
 
         reconstructed_bars: dict[str, list[ReconstructedBar]] = {}
 
+        # Check once whether the detector supports batched detection
+        has_detect_batch = callable(getattr(detector, 'detect_batch', None))
+
         for vae_name, pairs in recon_images.items():
             logger.info(
-                "DetectStage: detecting notes in %d bars for VAE '%s' (method=%s)",
+                "DetectStage: detecting notes in %d bars for VAE '%s' (method=%s%s)",
                 len(pairs),
                 vae_name,
                 detection_method,
+                ", batched" if has_detect_batch else "",
             )
 
             bars: list[ReconstructedBar] = []
-            for bar_id, recon_tensor in pairs:
-                channel_strategy = channel_strategy_by_id.get(
-                    bar_id, fallback_strategy
-                )
-                try:
-                    notes = detector.detect(recon_tensor, channel_strategy)
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.warning(
-                        "DetectStage: detection failed for bar '%s' — skipping. %s",
-                        bar_id,
-                        exc,
-                    )
-                    notes = []
 
-                bars.append(
-                    ReconstructedBar(
-                        bar_id=bar_id,
-                        vae_name=vae_name,
-                        recon_image=recon_tensor,
-                        detected_notes=notes,
-                        detection_method=detection_method,
+            if has_detect_batch and pairs:
+                # All pairs with the same channel strategy can be batched.
+                # Group by strategy to preserve correctness, then call detect_batch.
+                # Collect (bar_id, tensor, strategy) triples
+                triples = [
+                    (bar_id, recon_tensor, channel_strategy_by_id.get(bar_id, fallback_strategy))
+                    for bar_id, recon_tensor in pairs
+                ]
+
+                # Process per-strategy groups
+                # We want to preserve the original order, so group by strategy
+                # but keep track of original positions.
+                strategy_groups: dict[str, list[tuple[int, str, Any]]] = {}
+                for orig_idx, (bar_id, recon_tensor, strategy) in enumerate(triples):
+                    strategy_groups.setdefault(strategy, []).append(
+                        (orig_idx, bar_id, recon_tensor)
                     )
-                )
+
+                # Allocate result list by original index
+                note_results: list[list[MidiNote] | None] = [None] * len(pairs)
+                for strategy, group in strategy_groups.items():
+                    orig_indices = [g[0] for g in group]
+                    tensors = [g[2] for g in group]
+                    try:
+                        batch_notes = detector.detect_batch(tensors, strategy)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        logger.warning(
+                            "DetectStage: detect_batch failed for strategy '%s' — "
+                            "falling back to per-image detection. %s",
+                            strategy,
+                            exc,
+                        )
+                        batch_notes = []
+                        for tensor in tensors:
+                            try:
+                                batch_notes.append(detector.detect(tensor, strategy))
+                            except Exception as exc2:  # pylint: disable=broad-except
+                                logger.warning(
+                                    "DetectStage: per-image fallback also failed. %s", exc2
+                                )
+                                batch_notes.append([])
+
+                    for orig_idx, per_image_notes in zip(orig_indices, batch_notes):
+                        note_results[orig_idx] = per_image_notes
+
+                for orig_idx, (bar_id, recon_tensor) in enumerate(pairs):
+                    notes = note_results[orig_idx] or []
+                    bars.append(
+                        ReconstructedBar(
+                            bar_id=bar_id,
+                            vae_name=vae_name,
+                            recon_image=recon_tensor,
+                            detected_notes=notes,
+                            detection_method=detection_method,
+                        )
+                    )
+            else:
+                # Fallback: per-image detection
+                for bar_id, recon_tensor in pairs:
+                    channel_strategy = channel_strategy_by_id.get(
+                        bar_id, fallback_strategy
+                    )
+                    try:
+                        notes = detector.detect(recon_tensor, channel_strategy)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        logger.warning(
+                            "DetectStage: detection failed for bar '%s' — skipping. %s",
+                            bar_id,
+                            exc,
+                        )
+                        notes = []
+
+                    bars.append(
+                        ReconstructedBar(
+                            bar_id=bar_id,
+                            vae_name=vae_name,
+                            recon_image=recon_tensor,
+                            detected_notes=notes,
+                            detection_method=detection_method,
+                        )
+                    )
 
             reconstructed_bars[vae_name] = bars
             logger.info(
