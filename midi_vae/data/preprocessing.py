@@ -18,8 +18,10 @@ Edge-case handling:
 from __future__ import annotations
 
 import logging
+import os
 import random
 import warnings
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterator
 
@@ -125,6 +127,29 @@ def _segment_track(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Process-pool worker (module-level so it is pickleable)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _ingest_file_worker(path_str: str, ingestor_kwargs: dict) -> list[BarData]:
+    """Top-level worker function called by ProcessPoolExecutor.
+
+    Must be defined at module level so it can be pickled.  Instantiates a
+    fresh MidiIngestor (cheap) inside the worker process and calls
+    ingest_file.
+
+    Args:
+        path_str: String representation of the file path to ingest.
+        ingestor_kwargs: Keyword arguments forwarded to MidiIngestor.__init__.
+
+    Returns:
+        List of BarData objects from the given file.
+    """
+    ingestor = MidiIngestor(**ingestor_kwargs)
+    return ingestor.ingest_file(path_str)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Main class
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -195,6 +220,78 @@ class MidiIngestor:
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("Failed to load '%s', skipping. Reason: %s", path, exc)
             return []
+
+    def ingest_files_parallel(
+        self,
+        paths: list[Path],
+        max_workers: int | None = None,
+    ) -> list[BarData]:
+        """Load multiple MIDI files in parallel using multiprocessing.
+
+        Uses ProcessPoolExecutor so that the C-level parsing done by
+        pretty_midi and pypianoroll can run concurrently.  Each file is
+        processed independently; errors are caught per-file and do not abort
+        the batch.  Results are returned in deterministic order sorted by
+        file path, matching the output of sequential ingest_file calls.
+
+        Args:
+            paths: List of paths to MIDI or .npz files.
+            max_workers: Maximum number of worker processes.  Defaults to
+                         min(cpu_count, len(paths), 8).  Set to 1 to
+                         disable parallelism.
+
+        Returns:
+            Flat list of BarData objects in file-path-sorted order.
+        """
+        if not paths:
+            return []
+
+        cpu_count = os.cpu_count() or 1
+        if max_workers is None:
+            max_workers = min(cpu_count, len(paths), 8)
+
+        # For tiny batches or single-worker requests, stay in-process.
+        if max_workers <= 1 or len(paths) == 1:
+            all_bars: list[BarData] = []
+            for p in sorted(paths):
+                all_bars.extend(self.ingest_file(p))
+            return all_bars
+
+        # Build ingestor kwargs for the worker (must be pickleable).
+        ingestor_kwargs = {
+            "time_steps": self.time_steps,
+            "min_notes_per_bar": self.min_notes_per_bar,
+            "beat_resolution": self.beat_resolution,
+            "accepted_time_sig": self.accepted_time_sig,
+            "instruments": self.instruments,
+            "bars_per_instrument": self.bars_per_instrument,
+            "seed": self.seed,
+        }
+
+        sorted_paths = sorted(paths)
+        results: dict[int, list[BarData]] = {}
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_to_idx = {
+                executor.submit(_ingest_file_worker, str(p), ingestor_kwargs): i
+                for i, p in enumerate(sorted_paths)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    bars = future.result()
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.warning(
+                        "Worker failed for index %d: %s", idx, exc
+                    )
+                    bars = []
+                results[idx] = bars
+
+        # Flatten in sorted order.
+        all_bars_parallel: list[BarData] = []
+        for i in range(len(sorted_paths)):
+            all_bars_parallel.extend(results.get(i, []))
+        return all_bars_parallel
 
     def ingest_directory(
         self,

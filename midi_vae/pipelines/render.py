@@ -82,31 +82,51 @@ class RenderStage(PipelineStage):
             return {"images": []}
 
         render_cfg = self.config.render
-        data_cfg = self.config.data
 
         logger.info("RenderStage: rendering %d bars with strategy '%s'", len(bars), render_cfg.channel_strategy)
 
         images: list[PianoRollImage] = []
-        for bar in bars:
-            try:
-                tensor = self._strategy.render(bar)
-                tensor = self._resize(tensor)
+
+        # Attempt batched rendering for efficiency.
+        try:
+            batch_tensor = self._strategy.render_batch(bars)   # (N, 3, H, W)
+            batch_tensor = self._resize.batch_call(batch_tensor)  # (N, 3, tH, tW)
+            resolution = tuple(batch_tensor.shape[2:])
+            for i, bar in enumerate(bars):
                 image = PianoRollImage(
                     bar_id=bar.bar_id,
-                    image=tensor,
+                    image=batch_tensor[i],
                     channel_strategy=render_cfg.channel_strategy,
-                    resolution=tuple(tensor.shape[1:]),
+                    resolution=resolution,
                     pitch_axis=render_cfg.pitch_axis,
                 )
                 images.append(image)
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.warning(
-                    "RenderStage failed to render bar '%s', skipping. Reason: %s",
-                    bar.bar_id,
-                    exc,
-                )
+            logger.info("RenderStage: produced %d images (batched)", len(images))
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "RenderStage batched rendering failed (%s); falling back to sequential", exc
+            )
+            images = []
+            for bar in bars:
+                try:
+                    tensor = self._strategy.render(bar)
+                    tensor = self._resize(tensor)
+                    image = PianoRollImage(
+                        bar_id=bar.bar_id,
+                        image=tensor,
+                        channel_strategy=render_cfg.channel_strategy,
+                        resolution=tuple(tensor.shape[1:]),
+                        pitch_axis=render_cfg.pitch_axis,
+                    )
+                    images.append(image)
+                except Exception as bar_exc:  # pylint: disable=broad-except
+                    logger.warning(
+                        "RenderStage failed to render bar '%s', skipping. Reason: %s",
+                        bar.bar_id,
+                        bar_exc,
+                    )
+            logger.info("RenderStage: produced %d images (sequential fallback)", len(images))
 
-        logger.info("RenderStage: produced %d images", len(images))
         return {"images": images}
 
     def cache_key(self, context: dict[str, Any]) -> str | None:
