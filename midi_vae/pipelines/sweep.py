@@ -55,6 +55,28 @@ class SweepCondition:
         label: Human-readable label for logging.
     """
 
+    # Relative compute cost weights by VAE model name pattern.
+    # The baseline (1.0) corresponds to Stable Diffusion 1.5 / 2.1 VAEs.
+    _VAE_COST_WEIGHTS: dict[str, float] = {
+        "sd_1": 1.0,
+        "sd_2": 1.0,
+        "sdxl": 1.5,
+        "sdxl_turbo": 1.5,
+        "sd3": 2.0,
+        "sd3.5": 2.0,
+        "flux": 2.5,
+        "cogview4": 2.5,
+        "kandinsky": 1.2,
+        "playground": 1.5,
+    }
+
+    # Relative compute cost by channel strategy.
+    _CHANNEL_COST_WEIGHTS: dict[str, float] = {
+        "velocity_only": 1.0,
+        "vo_split": 1.1,
+        "vos": 1.2,
+    }
+
     def __init__(
         self,
         vae_cfg: VAEConfig,
@@ -69,6 +91,28 @@ class SweepCondition:
         self.label = (
             f"{vae_cfg.name}__{channel_strategy}__{detection_method}"
         )
+
+    def estimated_cost(self) -> float:
+        """Estimate relative compute cost for load balancing.
+
+        Larger models (more params, higher resolution) take longer.
+        The estimate is based on the VAE model name and channel strategy.
+
+        Returns:
+            A relative weight where 1.0 represents the baseline SD 1.5 cost.
+            The total cost is vae_weight * channel_weight.
+        """
+        name_lower = self.vae_cfg.name.lower()
+
+        # Match against known VAE name patterns (most specific first)
+        vae_weight = 1.0
+        for pattern, weight in self._VAE_COST_WEIGHTS.items():
+            if pattern in name_lower:
+                vae_weight = weight
+                break
+
+        channel_weight = self._CHANNEL_COST_WEIGHTS.get(self.channel_strategy, 1.0)
+        return vae_weight * channel_weight
 
 
 class SweepExecutor:

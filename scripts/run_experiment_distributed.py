@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -193,9 +194,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--assign-strategy",
-        choices=["round-robin", "contiguous"],
-        default="round-robin",
-        help="How to assign conditions to ranks (default: round-robin).",
+        choices=["round-robin", "contiguous", "cost-balanced"],
+        default="cost-balanced",
+        help=(
+            "How to assign conditions to ranks. "
+            "'round-robin': cycle through ranks in index order. "
+            "'contiguous': give each rank a contiguous block of conditions. "
+            "'cost-balanced': greedy LPT algorithm using estimated VAE compute "
+            "costs for even wall-clock load distribution (default)."
+        ),
+    )
+    parser.add_argument(
+        "--no-cpu-pinning",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable taskset CPU core pinning when launching GPU subprocesses. "
+            "Use this on systems where taskset is unavailable or restricted."
+        ),
     )
     return parser.parse_args()
 
@@ -303,14 +319,18 @@ def _detect_gpu_count() -> int:
 def _assign_conditions(
     num_conditions: int,
     num_ranks: int,
-    strategy: str = "round-robin",
+    strategy: str = "cost-balanced",
+    cost_weights: list[float] | None = None,
 ) -> list[list[int]]:
     """Partition condition indices across ranks.
 
     Args:
         num_conditions: Total number of sweep conditions.
         num_ranks: Number of GPU ranks (workers).
-        strategy: "round-robin" or "contiguous".
+        strategy: One of "round-robin", "contiguous", or "cost-balanced".
+        cost_weights: Per-condition estimated cost weights, required (and only
+            used) when strategy is "cost-balanced".  If None and strategy is
+            "cost-balanced", falls back to round-robin behaviour.
 
     Returns:
         List of length ``num_ranks``.  Each element is the list of
@@ -318,16 +338,39 @@ def _assign_conditions(
         ranks may receive an empty list if ``num_conditions < num_ranks``.
     """
     assignments: list[list[int]] = [[] for _ in range(num_ranks)]
+
     if strategy == "round-robin":
         for idx in range(num_conditions):
             assignments[idx % num_ranks].append(idx)
-    else:  # contiguous
+
+    elif strategy == "contiguous":
         chunk, remainder = divmod(num_conditions, num_ranks)
         start = 0
         for rank in range(num_ranks):
             size = chunk + (1 if rank < remainder else 0)
             assignments[rank] = list(range(start, start + size))
             start += size
+
+    else:  # cost-balanced (LPT — Longest Processing Time first)
+        if cost_weights is None or len(cost_weights) != num_conditions:
+            # Graceful fallback: treat all conditions as equal cost (round-robin)
+            for idx in range(num_conditions):
+                assignments[idx % num_ranks].append(idx)
+        else:
+            # Sort condition indices by descending cost
+            sorted_indices = sorted(
+                range(num_conditions),
+                key=lambda i: cost_weights[i],
+                reverse=True,
+            )
+            # Track total cost accumulated per rank for the greedy assignment
+            rank_loads: list[float] = [0.0] * num_ranks
+            for idx in sorted_indices:
+                # Assign to the rank with the lowest current load
+                cheapest_rank = min(range(num_ranks), key=lambda r: rank_loads[r])
+                assignments[cheapest_rank].append(idx)
+                rank_loads[cheapest_rank] += cost_weights[idx]
+
     return assignments
 
 
@@ -495,12 +538,15 @@ def _run_worker(
     summary_path = output_root / f"sweep_summary_rank{rank:04d}.json"
     try:
         all_conditions = executor.conditions()
+        assigned_conditions = [all_conditions[i] for i in condition_indices]
+        estimated_total_cost = sum(c.estimated_cost() for c in assigned_conditions)
         summary_data = {
             "rank": rank,
             "local_gpu_id": local_gpu_id,
             "elapsed_seconds": round(elapsed, 2),
             "condition_indices": condition_indices,
             "conditions": [all_conditions[i].label for i in condition_indices],
+            "estimated_total_cost": round(estimated_total_cost, 4),
             "metrics_summary": results.get("__summary__", {}),
         }
         with summary_path.open("w") as fh:
@@ -516,8 +562,52 @@ def _run_worker(
 # Single-node launcher: spawn one subprocess per GPU
 # ---------------------------------------------------------------------------
 
-def _launch_single_node(args: argparse.Namespace, num_gpus: int, assignments: list[list[int]]) -> int:
+def _compute_cpu_affinity(num_gpus: int) -> tuple[int, list[tuple[int, int]]]:
+    """Compute CPU core ranges to pin to each GPU process.
+
+    Divides all available CPU cores evenly across GPU processes.
+
+    Args:
+        num_gpus: Number of GPU subprocess workers.
+
+    Returns:
+        Tuple of (cores_per_gpu, [(start_core, end_core), ...]) where each
+        element of the list corresponds to a GPU rank (0-based).  The
+        start/end values are inclusive core indices for taskset.
+    """
+    total_cores = os.cpu_count() or 1
+    cores_per_gpu = max(1, total_cores // num_gpus)
+    ranges: list[tuple[int, int]] = []
+    for rank in range(num_gpus):
+        start_core = rank * cores_per_gpu
+        # Last rank gets any leftover cores
+        if rank == num_gpus - 1:
+            end_core = total_cores - 1
+        else:
+            end_core = start_core + cores_per_gpu - 1
+        ranges.append((start_core, end_core))
+    return cores_per_gpu, ranges
+
+
+_PROGRESS_POLL_INTERVAL = 30  # seconds between progress reports
+
+
+def _launch_single_node(
+    args: argparse.Namespace,
+    num_gpus: int,
+    assignments: list[list[int]],
+) -> int:
     """Spawn one subprocess per GPU on this node and wait for all to finish.
+
+    Each subprocess is given:
+    * Its own CUDA_VISIBLE_DEVICES (one GPU each).
+    * Thread-count env vars (OMP_NUM_THREADS, MKL_NUM_THREADS, etc.) set to
+      ``total_cores // num_gpus`` to prevent thread over-subscription.
+    * taskset CPU pinning (Linux only) unless ``--no-cpu-pinning`` is set.
+
+    After launching, the function polls subprocess status every
+    ``_PROGRESS_POLL_INTERVAL`` seconds and prints a running summary.
+    A final per-rank summary table is printed after all workers finish.
 
     Args:
         args: Parsed CLI arguments.
@@ -529,11 +619,26 @@ def _launch_single_node(args: argparse.Namespace, num_gpus: int, assignments: li
     """
     logger = get_logger(__name__)
 
-    # Determine base output root (may be overridden in args)
-    base_output_root = args.output_root  # may be None; workers will write to rank subdirs
+    base_output_root = args.output_root  # may be None; workers write to rank subdirs
 
-    processes: list[tuple[int, subprocess.Popen]] = []  # (rank, proc)
-    python = str(_REPO_ROOT / ".venv" / "bin" / "python")
+    # Compute CPU affinity parameters once for all ranks
+    cores_per_gpu, core_ranges = _compute_cpu_affinity(num_gpus)
+    is_linux = platform.system() == "Linux"
+    use_taskset = is_linux and not getattr(args, "no_cpu_pinning", False)
+
+    # Check taskset availability on Linux
+    if use_taskset:
+        try:
+            subprocess.run(
+                ["taskset", "--version"],
+                capture_output=True,
+                check=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            logger.warning("taskset not available — disabling CPU pinning.")
+            use_taskset = False
+
+    processes: list[tuple[int, subprocess.Popen, object, float]] = []  # (rank, proc, log_fh, start_time)
 
     for rank, condition_indices in enumerate(assignments):
         if not condition_indices:
@@ -549,12 +654,22 @@ def _launch_single_node(args: argparse.Namespace, num_gpus: int, assignments: li
         gpu_env[_WORLD_SIZE_ENV] = str(num_gpus)
         gpu_env[_CONDITION_INDICES_ENV] = ",".join(str(i) for i in condition_indices)
 
+        # Set thread-count environment variables to prevent over-subscription
+        threads_str = str(cores_per_gpu)
+        gpu_env["OMP_NUM_THREADS"] = threads_str
+        gpu_env["MKL_NUM_THREADS"] = threads_str
+        gpu_env["OPENBLAS_NUM_THREADS"] = threads_str
+        gpu_env["NUMEXPR_NUM_THREADS"] = threads_str
+
         # Rank-specific output directory (avoids file conflicts)
-        rank_output = _rank_output_root(
-            base_output_root or "outputs", rank
-        )
+        rank_output = _rank_output_root(base_output_root or "outputs", rank)
 
         cmd = _build_worker_command(args, rank, condition_indices, rank_output)
+
+        # Prepend taskset for CPU core pinning on Linux
+        if use_taskset:
+            start_core, end_core = core_ranges[rank]
+            cmd = ["taskset", "-c", f"{start_core}-{end_core}"] + cmd
 
         log_path = Path(rank_output) / f"worker_rank{rank:04d}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -574,28 +689,89 @@ def _launch_single_node(args: argparse.Namespace, num_gpus: int, assignments: li
             stdout=log_fh,
             stderr=subprocess.STDOUT,
         )
-        processes.append((rank, proc, log_fh))  # type: ignore[arg-type]
+        processes.append((rank, proc, log_fh, time.monotonic()))  # type: ignore[arg-type]
 
     if not processes:
         logger.warning("No subprocesses launched — all ranks have empty condition lists.")
         return 0
 
+    # Print launch summary table
     print(f"\n{'='*70}")
     print(f"  Distributed sweep: {len(processes)} GPU worker(s) launched")
-    for rank, proc, _ in processes:
-        print(f"    GPU {rank} (PID {proc.pid}): conditions {assignments[rank]}")
+    print(f"  CPU cores available: {os.cpu_count() or 1}  |  cores/GPU: {cores_per_gpu}")
+    print(f"  CPU pinning (taskset): {'enabled' if use_taskset else 'disabled'}")
+    for rank, proc, _, _ in processes:
+        start_core, end_core = core_ranges[rank]
+        core_info = f"  cores {start_core}-{end_core}" if use_taskset else ""
+        print(
+            f"    GPU {rank} (PID {proc.pid}){core_info}: "
+            f"{len(assignments[rank])} conditions {assignments[rank]}"
+        )
     print(f"{'='*70}\n")
 
-    # Wait for all subprocesses, capturing exit codes
+    # ------------------------------------------------------------------
+    # Poll subprocess status every _PROGRESS_POLL_INTERVAL seconds
+    # ------------------------------------------------------------------
+    exit_codes: dict[int, int | None] = {rank: None for rank, _, _, _ in processes}
+    active = {rank: (proc, log_fh, t0) for rank, proc, log_fh, t0 in processes}
+
+    while active:
+        time.sleep(_PROGRESS_POLL_INTERVAL)
+
+        still_running: list[int] = []
+        newly_done: list[int] = []
+
+        for rank, (proc, log_fh, _t0) in list(active.items()):
+            rc = proc.poll()
+            if rc is not None:
+                exit_codes[rank] = rc
+                log_fh.close()
+                del active[rank]
+                newly_done.append(rank)
+            else:
+                still_running.append(rank)
+
+        t0_by_rank = {rank: t0 for rank, _p, _fh, t0 in processes}
+
+        if newly_done:
+            for rank in newly_done:
+                rc = exit_codes[rank]
+                elapsed = round(time.monotonic() - t0_by_rank[rank], 1)
+                status = "OK" if rc == 0 else f"FAILED (rc={rc})"
+                print(f"  [progress] GPU {rank} finished after {elapsed}s — {status}")
+
+        if still_running:
+            running_info = ", ".join(
+                f"GPU {r} ({round(time.monotonic() - t0_by_rank[r], 0):.0f}s)"
+                for r in sorted(still_running)
+            )
+            print(f"  [progress] Still running: {running_info}")
+
+    # ------------------------------------------------------------------
+    # Final summary table
+    # ------------------------------------------------------------------
+    print(f"\n{'='*70}")
+    print("  Per-rank final summary:")
+    print(f"  {'GPU':>4}  {'#Conds':>7}  {'Elapsed':>9}  {'Exit':>6}")
+    print(f"  {'-'*4}  {'-'*7}  {'-'*9}  {'-'*6}")
+
+    t0_by_rank = {rank: t0 for rank, _p, _fh, t0 in processes}
+    elapsed_by_rank = {
+        rank: round(time.monotonic() - t0_by_rank[rank], 1)
+        for rank in exit_codes
+    }
+
     failed_ranks: list[int] = []
-    for rank, proc, log_fh in processes:
-        rc = proc.wait()
-        log_fh.close()
+    for rank in sorted(exit_codes):
+        rc = exit_codes[rank]
+        n_conds = len(assignments[rank])
+        elapsed = elapsed_by_rank[rank]
+        rc_str = "0 (OK)" if rc == 0 else str(rc)
+        print(f"  {rank:>4}  {n_conds:>7}  {elapsed:>8.1f}s  {rc_str:>6}")
         if rc != 0:
-            logger.error("GPU %d worker failed with exit code %d.", rank, rc)
             failed_ranks.append(rank)
-        else:
-            logger.info("GPU %d worker finished successfully.", rank)
+
+    print(f"{'='*70}\n")
 
     if failed_ranks:
         logger.error("Failed ranks: %s", failed_ranks)
@@ -728,6 +904,19 @@ def main() -> int:
         # Set CUDA_VISIBLE_DEVICES to the local GPU
         os.environ["CUDA_VISIBLE_DEVICES"] = str(local_gpu_id)
 
+        # In multi-node SLURM mode, trust SLURM's CPU binding but ensure
+        # thread-count env vars are set so libraries don't over-subscribe.
+        slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+        if slurm_cpus:
+            for thread_var in (
+                "OMP_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "OPENBLAS_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS",
+            ):
+                if thread_var not in os.environ:
+                    os.environ[thread_var] = slurm_cpus
+
         raw = _load_raw_config(args)
 
         # Collect sweep axes
@@ -753,7 +942,13 @@ def main() -> int:
         all_conditions = temp_executor.conditions()
         num_conditions = len(all_conditions)
 
-        assignments = _assign_conditions(num_conditions, world_size, args.assign_strategy)
+        slurm_cost_weights: list[float] | None = None
+        if args.assign_strategy == "cost-balanced":
+            slurm_cost_weights = [c.estimated_cost() for c in all_conditions]
+
+        assignments = _assign_conditions(
+            num_conditions, world_size, args.assign_strategy, slurm_cost_weights
+        )
         condition_indices = assignments[global_rank]
 
         logger.info(
@@ -831,7 +1026,14 @@ def main() -> int:
             effective_ranks,
         )
 
-    assignments = _assign_conditions(num_conditions, effective_ranks, args.assign_strategy)
+    # Compute per-condition cost weights for cost-balanced strategy
+    cost_weights: list[float] | None = None
+    if args.assign_strategy == "cost-balanced":
+        cost_weights = [c.estimated_cost() for c in all_conditions]
+
+    assignments = _assign_conditions(
+        num_conditions, effective_ranks, args.assign_strategy, cost_weights
+    )
 
     # Print assignment table
     print(f"\n{'='*70}")
@@ -840,7 +1042,11 @@ def main() -> int:
     print(f"{'='*70}")
     for rank_idx, indices in enumerate(assignments):
         labels = [all_conditions[i].label for i in indices]
-        print(f"  GPU {rank_idx}: {len(indices)} conditions")
+        rank_cost = (
+            sum(cost_weights[i] for i in indices) if cost_weights is not None else None
+        )
+        cost_str = f"  (est. cost: {rank_cost:.2f})" if rank_cost is not None else ""
+        print(f"  GPU {rank_idx}: {len(indices)} conditions{cost_str}")
         for lbl in labels:
             print(f"        {lbl}")
     print(f"{'='*70}\n")
