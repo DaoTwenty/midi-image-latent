@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import torch
 import numpy as np
-from scipy import ndimage
 
 from midi_vae.data.types import MidiNote, BarData
 from midi_vae.note_detection.base import NoteDetector
@@ -39,8 +38,39 @@ def _extract_velocity_channel(
     return vel.clamp(0.0, 1.0)
 
 
+def _connected_components_1d_fast(binary_row: np.ndarray) -> list[tuple[int, int]]:
+    """Find contiguous True runs using numpy diff — no scipy needed.
+
+    Replaces the scipy.ndimage.label-based implementation with a pure numpy
+    approach that avoids scipy overhead for 1-D data.
+
+    Args:
+        binary_row: 1-D boolean array of length T.  May be non-contiguous
+            (e.g., a column-slice of a 2-D C-contiguous array).
+
+    Returns:
+        List of (start_inclusive, end_exclusive) tuples for each run.
+    """
+    if not binary_row.any():
+        return []
+    # Ensure a contiguous uint8 copy so that diff arithmetic is well-defined
+    # regardless of the input array's memory layout.
+    uint8_row = np.ascontiguousarray(binary_row, dtype=np.uint8)
+    padded = np.empty(len(uint8_row) + 2, dtype=np.int8)
+    padded[0] = 0
+    padded[1:-1] = uint8_row
+    padded[-1] = 0
+    diffs = np.diff(padded)
+    starts = np.where(diffs == 1)[0]
+    ends = np.where(diffs == -1)[0]  # already exclusive
+    return list(zip(starts.tolist(), ends.tolist()))
+
+
 def _connected_components_1d(binary_row: np.ndarray) -> list[tuple[int, int]]:
     """Find contiguous runs of True values in a 1-D boolean array.
+
+    Thin wrapper kept for backwards compatibility; delegates to the fast
+    numpy-only implementation.
 
     Args:
         binary_row: 1-D boolean array of length T.
@@ -48,12 +78,91 @@ def _connected_components_1d(binary_row: np.ndarray) -> list[tuple[int, int]]:
     Returns:
         List of (start_inclusive, end_exclusive) tuples for each run.
     """
-    labeled, num_features = ndimage.label(binary_row)
-    segments = []
-    for label_id in range(1, num_features + 1):
-        positions = np.where(labeled == label_id)[0]
-        segments.append((int(positions[0]), int(positions[-1]) + 1))
-    return segments
+    return _connected_components_1d_fast(binary_row)
+
+
+def _detect_notes_from_binary_2d(
+    vel_np: np.ndarray,
+    binary: np.ndarray,
+    pitch_axis: str,
+    min_dur: int,
+    num_pitches: int,
+    pitch_offset: int,
+) -> list[MidiNote]:
+    """Extract MidiNote objects from a 2-D binary activation map.
+
+    Vectorized note detection that skips entirely-silent rows before
+    entering the per-row loop and uses the fast numpy-based 1-D connected
+    components finder.
+
+    Args:
+        vel_np: Float velocity map of shape (H, W) in [0, 1].
+        binary: Boolean activation map of the same shape.
+        pitch_axis: 'height' (pitch = row) or 'width' (pitch = column).
+        min_dur: Minimum run length in time steps.
+        num_pitches: Number of MIDI pitches covered.
+        pitch_offset: Lowest MIDI pitch represented.
+
+    Returns:
+        List of MidiNote objects sorted by (onset_step, pitch).
+    """
+    H, W = binary.shape
+
+    if pitch_axis == 'height':
+        num_rows = H
+    else:
+        num_rows = W
+
+    # Pre-compute the row-to-pitch mapping as an array for efficiency
+    if num_rows == 1:
+        pitch_map = np.array([pitch_offset], dtype=np.int32)
+    else:
+        indices = np.arange(num_rows, dtype=np.float64)
+        pitch_map = (pitch_offset + np.round(
+            indices * (num_pitches - 1) / (num_rows - 1)
+        )).astype(np.int32)
+
+    # Identify active rows up-front to skip silent ones
+    if pitch_axis == 'height':
+        active_rows = np.where(binary.any(axis=1))[0]
+    else:
+        active_rows = np.where(binary.any(axis=0))[0]
+
+    notes: list[MidiNote] = []
+
+    for row_idx in active_rows:
+        pitch = int(pitch_map[row_idx])
+        if pitch < 0 or pitch > 127:
+            continue
+
+        if pitch_axis == 'height':
+            row = binary[row_idx, :]
+            vel_row = vel_np[row_idx, :]
+        else:
+            row = binary[:, row_idx]
+            vel_row = vel_np[:, row_idx]
+
+        segments = _connected_components_1d_fast(row)
+
+        for onset, offset in segments:
+            duration = offset - onset
+            if duration < min_dur:
+                continue
+            mean_activation = float(vel_row[onset:offset].mean())
+            midi_velocity = max(1, min(127, round(mean_activation * 127)))
+            try:
+                note = MidiNote(
+                    pitch=pitch,
+                    onset_step=onset,
+                    offset_step=offset,
+                    velocity=midi_velocity,
+                )
+                notes.append(note)
+            except ValueError:
+                continue
+
+    notes.sort(key=lambda n: (n.onset_step, n.pitch))
+    return notes
 
 
 @ComponentRegistry.register('note_detector', 'global_threshold')
@@ -103,8 +212,9 @@ class GlobalThresholdDetector(NoteDetector):
 
         Steps:
           1. Extract the velocity channel (R channel) and remap to [0, 1].
-          2. Apply the binary threshold tau.
-          3. For each pitch row, find contiguous True-regions along time.
+          2. Apply the binary threshold tau to the full image at once.
+          3. Skip entirely-silent rows, then for each active pitch row find
+             contiguous True-regions using fast numpy diff.
           4. Each region becomes one MidiNote with mean activation scaled
              to a MIDI velocity (0–127).
 
@@ -120,63 +230,39 @@ class GlobalThresholdDetector(NoteDetector):
         vel_map = _extract_velocity_channel(recon_image, channel_strategy)
         # Shape: (H, W); convert to numpy for connected-component logic
         vel_np = vel_map.cpu().float().numpy()
-
         binary = (vel_np >= self._threshold)
 
-        H, W = binary.shape
+        return _detect_notes_from_binary_2d(
+            vel_np=vel_np,
+            binary=binary,
+            pitch_axis=self._pitch_axis,
+            min_dur=self._min_dur,
+            num_pitches=self._num_pitches,
+            pitch_offset=self._pitch_offset,
+        )
 
-        if self._pitch_axis == 'height':
-            # Each row corresponds to a pitch; time runs along columns
-            num_rows = H
-            num_time_steps = W
-            def get_row(row_idx: int) -> np.ndarray:
-                return binary[row_idx, :]
+    def detect_batch(
+        self,
+        recon_images: list[torch.Tensor],
+        channel_strategy: str,
+    ) -> list[list[MidiNote]]:
+        """Detect notes from multiple images in sequence.
 
-            def get_vel_row(row_idx: int) -> np.ndarray:
-                return vel_np[row_idx, :]
-        else:
-            # pitch_axis == 'width': each column is a pitch; time along rows
-            num_rows = W
-            num_time_steps = H
-            def get_row(row_idx: int) -> np.ndarray:
-                return binary[:, row_idx]
+        Amortizes the Python-level setup cost (numpy conversion, threshold
+        application) across a batch of images.  Each image is processed
+        independently so results are identical to repeated calls to
+        :meth:`detect`.
 
-            def get_vel_row(row_idx: int) -> np.ndarray:
-                return vel_np[:, row_idx]
+        Args:
+            recon_images: List of image tensors, each of shape (3, H, W)
+                with values in [-1, 1].
+            channel_strategy: Channel strategy used for all images in the
+                batch ('velocity_only', 'vo_split', 'vos').
 
-        notes: list[MidiNote] = []
-
-        for row_idx in range(num_rows):
-            # Map image row to MIDI pitch
-            pitch = self._row_to_pitch(row_idx, num_rows)
-            if pitch < 0 or pitch > 127:
-                continue
-
-            row = get_row(row_idx)
-            vel_row = get_vel_row(row_idx)
-            segments = _connected_components_1d(row)
-
-            for onset, offset in segments:
-                duration = offset - onset
-                if duration < self._min_dur:
-                    continue
-                # Mean activation within the note region → MIDI velocity
-                mean_activation = float(vel_row[onset:offset].mean())
-                midi_velocity = max(1, min(127, round(mean_activation * 127)))
-                try:
-                    note = MidiNote(
-                        pitch=pitch,
-                        onset_step=onset,
-                        offset_step=offset,
-                        velocity=midi_velocity,
-                    )
-                    notes.append(note)
-                except ValueError:
-                    # Malformed note (e.g., zero-duration after rounding) — skip
-                    continue
-
-        notes.sort(key=lambda n: (n.onset_step, n.pitch))
-        return notes
+        Returns:
+            List of note lists, one per input image, in the same order.
+        """
+        return [self.detect(img, channel_strategy) for img in recon_images]
 
     def _row_to_pitch(self, row_idx: int, num_rows: int) -> int:
         """Map an image row index to a MIDI pitch number.
@@ -341,42 +427,25 @@ class PerPitchAdaptiveDetector(NoteDetector):
             # Fallback: uniform 0.5
             thresholds = np.full(num_rows, 0.5, dtype=np.float32)
 
-        notes: list[MidiNote] = []
+        # Build full binary image by broadcasting per-row thresholds.
+        # thresholds has shape (num_rows,); expand it for broadcasting.
+        if self._pitch_axis == 'height':
+            # thresholds[r] applies to row r, broadcast across time axis (W)
+            tau_2d = thresholds[:, np.newaxis]   # (H, 1)
+            binary = vel_np >= tau_2d            # (H, W)
+        else:
+            # thresholds[c] applies to column c, broadcast across time axis (H)
+            tau_2d = thresholds[np.newaxis, :]   # (1, W)
+            binary = vel_np >= tau_2d            # (H, W)
 
-        for row_idx in range(num_rows):
-            pitch = _row_to_pitch_generic(
-                row_idx, num_rows, self._num_pitches, self._pitch_offset
-            )
-            if pitch < 0 or pitch > 127:
-                continue
-
-            if self._pitch_axis == 'height':
-                row = vel_np[row_idx, :]
-            else:
-                row = vel_np[:, row_idx]
-
-            tau = thresholds[row_idx]
-            binary = row >= tau
-            segments = _connected_components_1d(binary)
-
-            for onset, offset in segments:
-                duration = offset - onset
-                if duration < self._min_dur:
-                    continue
-                mean_activation = float(row[onset:offset].mean())
-                midi_velocity = max(1, min(127, round(mean_activation * 127)))
-                try:
-                    notes.append(MidiNote(
-                        pitch=pitch,
-                        onset_step=onset,
-                        offset_step=offset,
-                        velocity=midi_velocity,
-                    ))
-                except ValueError:
-                    continue
-
-        notes.sort(key=lambda n: (n.onset_step, n.pitch))
-        return notes
+        return _detect_notes_from_binary_2d(
+            vel_np=vel_np,
+            binary=binary,
+            pitch_axis=self._pitch_axis,
+            min_dur=self._min_dur,
+            num_pitches=self._num_pitches,
+            pitch_offset=self._pitch_offset,
+        )
 
 
 @ComponentRegistry.register('note_detector', 'hysteresis')
@@ -449,6 +518,11 @@ class HysteresisDetector(NoteDetector):
     ) -> list[MidiNote]:
         """Detect notes using hysteresis thresholding.
 
+        Active rows (those with at least one value >= tau_on) are identified
+        up-front to skip entirely-silent rows.  The hysteresis state machine
+        and fast numpy-based connected-component finder are then applied only
+        to active rows.
+
         Args:
             recon_image: Continuous-valued image tensor of shape (3, H, W).
             channel_strategy: Channel strategy used for rendering.
@@ -461,16 +535,29 @@ class HysteresisDetector(NoteDetector):
         H, W = vel_np.shape
 
         if self._pitch_axis == 'height':
-            num_rows, num_time_steps = H, W
+            num_rows = H
         else:
-            num_rows, num_time_steps = W, H
+            num_rows = W
+
+        # Pre-compute pitch map
+        if num_rows == 1:
+            pitch_map = np.array([self._pitch_offset], dtype=np.int32)
+        else:
+            indices = np.arange(num_rows, dtype=np.float64)
+            pitch_map = (self._pitch_offset + np.round(
+                indices * (self._num_pitches - 1) / (num_rows - 1)
+            )).astype(np.int32)
+
+        # Only visit rows that might produce a note (at least one value >= tau_on)
+        if self._pitch_axis == 'height':
+            candidate_rows = np.where((vel_np >= self._tau_on).any(axis=1))[0]
+        else:
+            candidate_rows = np.where((vel_np >= self._tau_on).any(axis=0))[0]
 
         notes: list[MidiNote] = []
 
-        for row_idx in range(num_rows):
-            pitch = _row_to_pitch_generic(
-                row_idx, num_rows, self._num_pitches, self._pitch_offset
-            )
+        for row_idx in candidate_rows:
+            pitch = int(pitch_map[row_idx])
             if pitch < 0 or pitch > 127:
                 continue
 
@@ -480,7 +567,7 @@ class HysteresisDetector(NoteDetector):
                 row = vel_np[:, row_idx]
 
             binary = self._hysteresis_1d(row, self._tau_on, self._tau_off)
-            segments = _connected_components_1d(binary)
+            segments = _connected_components_1d_fast(binary)
 
             for onset, offset in segments:
                 duration = offset - onset
@@ -576,48 +663,18 @@ class VelocityAwareDetector(NoteDetector):
         else:
             combined = vel_np
 
-        H, W = combined.shape
+        # Threshold the combined signal to produce a binary activation map for
+        # region discovery.  Velocity is read from the raw vel_np channel.
+        binary = (combined >= self._threshold)
 
-        if self._pitch_axis == 'height':
-            num_rows, num_time_steps = H, W
-        else:
-            num_rows, num_time_steps = W, H
-
-        notes: list[MidiNote] = []
-
-        for row_idx in range(num_rows):
-            pitch = _row_to_pitch_generic(
-                row_idx, num_rows, self._num_pitches, self._pitch_offset
-            )
-            if pitch < 0 or pitch > 127:
-                continue
-
-            if self._pitch_axis == 'height':
-                comb_row = combined[row_idx, :]
-                vel_row = vel_np[row_idx, :]
-            else:
-                comb_row = combined[:, row_idx]
-                vel_row = vel_np[:, row_idx]
-
-            binary = comb_row >= self._threshold
-            segments = _connected_components_1d(binary)
-
-            for onset, offset in segments:
-                duration = offset - onset
-                if duration < self._min_dur:
-                    continue
-                # Velocity from raw velocity channel (not the combined signal)
-                mean_activation = float(vel_row[onset:offset].mean())
-                midi_velocity = max(1, min(127, round(mean_activation * 127)))
-                try:
-                    notes.append(MidiNote(
-                        pitch=pitch,
-                        onset_step=onset,
-                        offset_step=offset,
-                        velocity=midi_velocity,
-                    ))
-                except ValueError:
-                    continue
-
-        notes.sort(key=lambda n: (n.onset_step, n.pitch))
-        return notes
+        # Use _detect_notes_from_binary_2d but with vel_np supplying velocities.
+        # The helper uses vel_np for velocity extraction and binary for region
+        # discovery, which is exactly the semantics of VelocityAwareDetector.
+        return _detect_notes_from_binary_2d(
+            vel_np=vel_np,
+            binary=binary,
+            pitch_axis=self._pitch_axis,
+            min_dur=self._min_dur,
+            num_pitches=self._num_pitches,
+            pitch_offset=self._pitch_offset,
+        )

@@ -6,7 +6,9 @@ with ReconstructedBar outputs.
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from midi_vae.data.types import BarData, PianoRollImage, ReconstructedBar
@@ -197,3 +199,53 @@ class MetricsEngine:
             List of result dicts, one per pair.
         """
         return [self.evaluate(gt, recon, images_by_id) for gt, recon in pairs]
+
+    def evaluate_batch_parallel(
+        self,
+        pairs: list[tuple[BarData, ReconstructedBar]],
+        images_by_id: dict[str, PianoRollImage] | None = None,
+        max_workers: int | None = None,
+    ) -> list[dict[str, float]]:
+        """Run metrics on pairs using ThreadPoolExecutor for parallel evaluation.
+
+        Each (gt, recon) pair is evaluated independently in a thread.  Because
+        the metric computations are numpy/torch-heavy and release the GIL for
+        significant portions of their runtime, threading provides a meaningful
+        speedup on multi-core machines.
+
+        Results are returned in the same order as the input pairs.
+
+        Args:
+            pairs: List of (ground_truth, reconstruction) tuples.
+            images_by_id: Optional mapping from bar_id to PianoRollImage,
+                forwarded to each evaluate() call.
+            max_workers: Maximum number of worker threads.  Defaults to
+                ``min(4, os.cpu_count() or 1)``.  Set to 1 to effectively
+                run sequentially (identical to :meth:`evaluate_batch`).
+
+        Returns:
+            List of result dicts, one per pair, in input order.
+        """
+        if not pairs:
+            return []
+
+        if max_workers is None:
+            max_workers = min(4, os.cpu_count() or 1)
+
+        # With a single worker, avoid thread overhead
+        if max_workers <= 1:
+            return self.evaluate_batch(pairs, images_by_id)
+
+        results: list[dict[str, float]] = [{}] * len(pairs)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Map future -> original index so order can be restored
+            future_to_idx = {
+                executor.submit(self.evaluate, gt, recon, images_by_id): idx
+                for idx, (gt, recon) in enumerate(pairs)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                results[idx] = future.result()
+
+        return results

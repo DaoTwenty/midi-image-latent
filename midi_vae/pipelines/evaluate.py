@@ -144,7 +144,19 @@ class EvaluateStage(PipelineStage):
                 metrics_summary[vae_name] = {}
                 continue
 
-            per_bar_results = engine.evaluate_batch(pairs, images_by_id=images_by_id)
+            num_workers = getattr(self.config, 'num_workers', 1)
+            if num_workers > 1:
+                logger.info(
+                    "EvaluateStage: using parallel evaluation with %d workers",
+                    num_workers,
+                )
+                per_bar_results = engine.evaluate_batch_parallel(
+                    pairs,
+                    images_by_id=images_by_id,
+                    max_workers=num_workers,
+                )
+            else:
+                per_bar_results = engine.evaluate_batch(pairs, images_by_id=images_by_id)
             metrics[vae_name] = per_bar_results
 
             # Compute mean per metric key
