@@ -136,6 +136,23 @@ class ChannelStrategy(ABC):
         """
         ...
 
+    def render_batch(self, bars: list[BarData]) -> torch.Tensor:
+        """Render multiple bars at once using vectorized numpy operations.
+
+        The default implementation falls back to calling render() on each
+        bar individually and stacking the results.  Subclasses override
+        this method with a vectorized implementation for better performance.
+
+        Args:
+            bars: List of BarData objects to render.
+
+        Returns:
+            torch.Tensor of shape (N, 3, H, W) for N bars, with values
+            in [normalize_low, normalize_high].
+        """
+        tensors = [self.render(bar) for bar in bars]
+        return torch.stack(tensors, dim=0)
+
     def _finalize(self, channels: list[np.ndarray]) -> torch.Tensor:
         """Convert channel list to a tensor respecting the pitch_axis setting.
 
@@ -178,6 +195,37 @@ class VelocityOnlyStrategy(ChannelStrategy):
         )
         return self._finalize([vel, vel, vel])
 
+    def render_batch(self, bars: list[BarData]) -> torch.Tensor:
+        """Render multiple bars at once using vectorized numpy operations.
+
+        Stacks all piano_rolls into a single (N, 128, T) array, applies the
+        velocity normalization in one vectorized pass, then converts to a
+        (N, 3, H, W) tensor with a single torch.from_numpy call.
+
+        Args:
+            bars: List of BarData objects to render.
+
+        Returns:
+            torch.Tensor of shape (N, 3, H, W) with values in
+            [normalize_low, normalize_high].
+        """
+        if not bars:
+            return torch.empty(0, 3, 128, 1)
+
+        # Stack to (N, 128, T)
+        rolls = np.stack([b.piano_roll for b in bars], axis=0).astype(np.float32)
+        # Normalize velocity: [0, 127] -> [normalize_low, normalize_high]
+        vel = rolls / _VELOCITY_MAX * (self.normalize_high - self.normalize_low) + self.normalize_low
+
+        if self.pitch_axis == "width":
+            # (N, 128, T) -> (N, T, 128)
+            vel = vel.transpose(0, 2, 1)
+
+        # Broadcast to 3 channels: (N, 1, H, W) -> (N, 3, H, W)
+        vel_expanded = np.expand_dims(vel, axis=1)
+        batch = np.repeat(vel_expanded, 3, axis=1)
+        return torch.from_numpy(batch)
+
 
 @ComponentRegistry.register("channel_strategy", "vo_split")
 class VOSplitStrategy(ChannelStrategy):
@@ -214,6 +262,40 @@ class VOSplitStrategy(ChannelStrategy):
         )
         zeros = np.full(bar.piano_roll.shape, self.normalize_low, dtype=np.float32)
         return self._finalize([vel, onset, zeros])
+
+    def render_batch(self, bars: list[BarData]) -> torch.Tensor:
+        """Render multiple bars at once using vectorized numpy operations.
+
+        Stacks piano_rolls and onset_masks into (N, 128, T) arrays, applies
+        normalization in a single vectorized pass, then converts to a
+        (N, 3, H, W) tensor with a single torch.from_numpy call.
+
+        Args:
+            bars: List of BarData objects to render.
+
+        Returns:
+            torch.Tensor of shape (N, 3, H, W) with R=velocity, G=onset,
+            B=zeros (normalize_low), values in [normalize_low, normalize_high].
+        """
+        if not bars:
+            return torch.empty(0, 3, 128, 1)
+
+        n = len(bars)
+        rolls = np.stack([b.piano_roll for b in bars], axis=0).astype(np.float32)
+        onsets = np.stack([b.onset_mask for b in bars], axis=0).astype(np.float32)
+
+        vel = rolls / _VELOCITY_MAX * (self.normalize_high - self.normalize_low) + self.normalize_low
+        onset_ch = onsets * (self.normalize_high - self.normalize_low) + self.normalize_low
+        # Determine spatial shape after optional pitch-axis transpose
+        if self.pitch_axis == "width":
+            vel = vel.transpose(0, 2, 1)        # (N, T, 128)
+            onset_ch = onset_ch.transpose(0, 2, 1)
+
+        h, w = vel.shape[1], vel.shape[2]
+        zeros = np.full((n, h, w), self.normalize_low, dtype=np.float32)
+
+        batch = np.stack([vel, onset_ch, zeros], axis=1)  # (N, 3, H, W)
+        return torch.from_numpy(batch)
 
 
 @ComponentRegistry.register("channel_strategy", "vos")
@@ -256,6 +338,40 @@ class VOSStrategy(ChannelStrategy):
             high=self.normalize_high,
         )
         return self._finalize([vel, onset, sustain])
+
+    def render_batch(self, bars: list[BarData]) -> torch.Tensor:
+        """Render multiple bars at once using vectorized numpy operations.
+
+        Stacks piano_rolls, onset_masks, and sustain_masks into (N, 128, T)
+        arrays, applies normalization in a single vectorized pass, then
+        converts to a (N, 3, H, W) tensor with a single torch.from_numpy call.
+
+        Args:
+            bars: List of BarData objects to render.
+
+        Returns:
+            torch.Tensor of shape (N, 3, H, W) with R=velocity, G=onset,
+            B=sustain, values in [normalize_low, normalize_high].
+        """
+        if not bars:
+            return torch.empty(0, 3, 128, 1)
+
+        rolls = np.stack([b.piano_roll for b in bars], axis=0).astype(np.float32)
+        onsets = np.stack([b.onset_mask for b in bars], axis=0).astype(np.float32)
+        sustains = np.stack([b.sustain_mask for b in bars], axis=0).astype(np.float32)
+
+        span = self.normalize_high - self.normalize_low
+        vel = rolls / _VELOCITY_MAX * span + self.normalize_low
+        onset_ch = onsets * span + self.normalize_low
+        sustain_ch = sustains * span + self.normalize_low
+
+        if self.pitch_axis == "width":
+            vel = vel.transpose(0, 2, 1)
+            onset_ch = onset_ch.transpose(0, 2, 1)
+            sustain_ch = sustain_ch.transpose(0, 2, 1)
+
+        batch = np.stack([vel, onset_ch, sustain_ch], axis=1)  # (N, 3, H, W)
+        return torch.from_numpy(batch)
 
 
 def build_strategy(

@@ -89,6 +89,39 @@ class ResizeTransform:
         )
         return x.squeeze(0)
 
+    def batch_call(self, tensors: torch.Tensor) -> torch.Tensor:
+        """Resize a batch of (N, 3, H, W) tensors in a single F.interpolate call.
+
+        This avoids N separate calls to __call__ and is significantly faster
+        when resizing many bars at once.  The same interpolation method and
+        align_corners setting as __call__ are used.
+
+        Args:
+            tensors: Input batch tensor of shape (N, 3, H, W).
+
+        Returns:
+            Resized batch tensor of shape (N, 3, target_H, target_W).
+
+        Raises:
+            ValueError: If tensors does not have 4 dimensions.
+        """
+        if tensors.ndim != 4:
+            raise ValueError(
+                f"Expected a (N, 3, H, W) tensor, got shape {tuple(tensors.shape)}"
+            )
+
+        x = tensors.float()
+        align_corners: bool | None = None
+        if self.method in {"bilinear", "bicubic"}:
+            align_corners = False
+
+        return F.interpolate(
+            x,
+            size=self.target_resolution,
+            mode=self.method,
+            align_corners=align_corners,
+        )
+
     def __repr__(self) -> str:
         return (
             f"ResizeTransform(target_resolution={self.target_resolution}, "

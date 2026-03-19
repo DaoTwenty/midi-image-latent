@@ -107,17 +107,25 @@ class IngestStage(PipelineStage):
         if self._max_files is not None:
             all_files = all_files[: self._max_files]
 
+        num_workers: int = getattr(self.config, "num_workers", 1)
+
         logger.info(
-            "IngestStage: loading %d %s files from %s",
+            "IngestStage: loading %d %s files from %s (num_workers=%d)",
             len(all_files),
             dataset_name,
             data_root,
+            num_workers,
         )
 
-        bars: list[BarData] = []
-        for file_path in all_files:
-            file_bars = ingestor.ingest_file(file_path)
-            bars.extend(file_bars)
+        if num_workers > 1:
+            bars: list[BarData] = ingestor.ingest_files_parallel(
+                all_files, max_workers=num_workers
+            )
+        else:
+            bars = []
+            for file_path in all_files:
+                file_bars = ingestor.ingest_file(file_path)
+                bars.extend(file_bars)
 
         logger.info("IngestStage: extracted %d bars total", len(bars))
         return {"bars": bars}
