@@ -71,6 +71,8 @@ class DataConfig(BaseModel):
     time_steps: int = 96  # 64 | 96 | 128
     target_resolution: tuple[int, int] = (128, 128)
     max_files: int | None = None  # Limit number of files loaded (for debugging/mini runs)
+    max_bars_total: int | None = None  # Global hard cap on bars loaded across all files.
+    # When None, the cap is derived automatically from bars_per_instrument × len(instruments).
     subset: SubsetConfig | None = None  # Optional subset filtering of source files
     pipeline_chunk_size: int = 2000  # Bars per chunk in Render→Encode→Decode→Detect→Evaluate.
     # Set to 0 or -1 to process all bars at once (original behaviour, risks OOM on large datasets).

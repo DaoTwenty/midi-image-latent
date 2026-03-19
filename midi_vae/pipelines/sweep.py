@@ -36,7 +36,12 @@ from midi_vae.pipelines.detect import DetectStage
 from midi_vae.pipelines.encode import EncodeStage
 from midi_vae.pipelines.decode import DecodeStage
 from midi_vae.pipelines.evaluate import EvaluateStage
-from midi_vae.pipelines.ingest import IngestStage, iter_chunks
+from midi_vae.pipelines.ingest import (
+    DEFAULT_FILE_BATCH_SIZE,
+    IngestStage,
+    iter_chunks,
+    iter_file_batches,
+)
 from midi_vae.pipelines.render import RenderStage
 from midi_vae.registry import ComponentRegistry
 from midi_vae.tracking.experiment import ExperimentTracker
@@ -448,43 +453,36 @@ class SweepExecutor:
             return runner.run(resume_from=resume_from)
 
         # ------------------------------------------------------------------ #
-        # Chunked path                                                         #
+        # Chunked path — streaming ingestion                                  #
         # ------------------------------------------------------------------ #
+        # Instead of loading ALL bars into memory at once (which OOMs on
+        # large datasets like full Lakh), we:
+        #   1. Resolve the file list (cheap — just paths).
+        #   2. Iterate over file batches (e.g. 100 files at a time).
+        #   3. For each file batch, ingest bars → run pipeline → discard bars.
+        # This keeps peak memory proportional to one file batch, not the
+        # entire dataset.
 
-        # Step 1: Ingest once — BarData objects are lightweight (~12 KB each).
         ingest_stage = IngestStage(config)
-        ingest_runner = PipelineRunner(
-            [ingest_stage], config, cache_dir=cache_dir
-        )
-        ingest_context = ingest_runner.run(resume_from=resume_from)
-        all_bars: list[Any] = ingest_context.get("bars", [])
+        all_files = ingest_stage.resolve_files()
 
-        if not all_bars:
-            logger.warning("_run_condition: IngestStage produced no bars — skipping chunked processing")
-            return ingest_context
+        if not all_files:
+            logger.warning("_run_condition: no files found — skipping")
+            return {"bars": [], "metrics": {}, "metrics_summary": {}}
 
-        # Compute global bar cap from config to avoid processing far more bars
-        # than intended (bars_per_instrument limit acts per-file, not globally).
-        instruments = list(config.data.instruments) if config.data.instruments else []
-        max_bars: int | None = None
-        if config.data.bars_per_instrument and instruments:
-            max_bars = config.data.bars_per_instrument * len(instruments)
-            logger.info(
-                "_run_condition: global bar cap = %d (%d instruments × %d bars_per_instrument)",
-                max_bars,
-                len(instruments),
-                config.data.bars_per_instrument,
-            )
+        num_workers: int = getattr(config, "num_workers", 1)
+        ingestor = ingest_stage.make_ingestor()
 
-        total_bars = len(all_bars)
-        capped_bars = min(total_bars, max_bars) if max_bars is not None else total_bars
-        n_chunks = (capped_bars + chunk_size - 1) // chunk_size
+        file_batch_size = getattr(
+            config.data, "file_batch_size", None
+        ) or DEFAULT_FILE_BATCH_SIZE
+        n_file_batches = (len(all_files) + file_batch_size - 1) // file_batch_size
+
         logger.info(
-            "_run_condition: %d bars (capped at %d) split into %d chunk(s) of up to %d",
-            total_bars,
-            capped_bars,
-            n_chunks,
-            chunk_size,
+            "_run_condition: %d files, streaming in %d file-batch(es) of up to %d",
+            len(all_files),
+            n_file_batches,
+            file_batch_size,
         )
 
         # ------------------------------------------------------------------
@@ -523,54 +521,72 @@ class SweepExecutor:
 
         # Accumulators: per-VAE list of per-bar metric dicts.
         accumulated_metrics: dict[str, list[dict[str, float]]] = {}
+        total_bars_processed = 0
+        pipeline_chunk_idx = 0
 
-        for chunk_idx, chunk_bars in enumerate(
-            iter_chunks(all_bars, chunk_size, max_bars=max_bars)
+        for fb_idx, file_batch in enumerate(
+            iter_file_batches(all_files, file_batch_size)
         ):
+            # --- Ingest this batch of files ---
             logger.info(
-                "Processing chunk %d/%d (%d bars)",
-                chunk_idx + 1,
-                n_chunks,
-                len(chunk_bars),
+                "Ingesting file batch %d/%d (%d files)",
+                fb_idx + 1, n_file_batches, len(file_batch),
+            )
+            batch_bars = ingest_stage.ingest_batch(
+                file_batch, ingestor=ingestor, num_workers=num_workers
             )
 
-            # Build a fresh context seeded with this chunk's bars and the
-            # pre-loaded VAE instances so EncodeStage/DecodeStage reuse them.
-            chunk_context: dict[str, Any] = {
-                "bars": chunk_bars,
-                "_vae_instances": vae_instances,
-            }
+            if not batch_bars:
+                logger.info("File batch %d/%d produced 0 bars, skipping", fb_idx + 1, n_file_batches)
+                continue
 
-            # Run only the non-ingest stages; ingest output is already in
-            # chunk_context so we skip IngestStage by not including it.
-            for stage in chunk_runner._execution_order:
-                stage_name = stage.name
-                logger.info("[RUN chunk %d/%d] %s", chunk_idx + 1, n_chunks, stage_name)
-                t0 = time.time()
-                outputs = stage.run(chunk_context)
-                elapsed = time.time() - t0
+            total_bars_processed += len(batch_bars)
+
+            # --- Sub-chunk the batch bars through the pipeline ---
+            # If pipeline_chunk_size is set, process in smaller slices.
+            # Otherwise process the entire file batch at once.
+            for chunk_bars in iter_chunks(batch_bars, chunk_size):
+                pipeline_chunk_idx += 1
                 logger.info(
-                    "[DONE chunk %d/%d] %s (%.1fs)",
-                    chunk_idx + 1, n_chunks, stage_name, elapsed,
+                    "Processing pipeline chunk %d (file batch %d/%d, %d bars)",
+                    pipeline_chunk_idx, fb_idx + 1, n_file_batches, len(chunk_bars),
                 )
-                chunk_context.update(outputs)
 
-            # Accumulate per-bar metrics from this chunk.
-            chunk_metrics: dict[str, list[dict[str, float]]] = chunk_context.get(
-                "metrics", {}
-            )
-            for vae_name, bar_dicts in chunk_metrics.items():
-                accumulated_metrics.setdefault(vae_name, []).extend(bar_dicts)
+                chunk_context: dict[str, Any] = {
+                    "bars": chunk_bars,
+                    "_vae_instances": vae_instances,
+                }
 
-            # Explicitly release heavy tensor data so Python/CUDA can GC them
-            # before the next chunk is rendered.  Do NOT pop _vae_instances —
-            # we keep them alive across chunks for reuse.
-            for heavy_key in ("images", "latents", "recon_images", "reconstructed_bars"):
-                chunk_context.pop(heavy_key, None)
-            del chunk_context
+                for stage in chunk_runner._execution_order:
+                    stage_name = stage.name
+                    logger.info("[RUN chunk %d] %s", pipeline_chunk_idx, stage_name)
+                    t0 = time.time()
+                    outputs = stage.run(chunk_context)
+                    elapsed = time.time() - t0
+                    logger.info(
+                        "[DONE chunk %d] %s (%.1fs)",
+                        pipeline_chunk_idx, stage_name, elapsed,
+                    )
+                    chunk_context.update(outputs)
+
+                # Accumulate per-bar metrics from this chunk.
+                chunk_metrics: dict[str, list[dict[str, float]]] = chunk_context.get(
+                    "metrics", {}
+                )
+                for vae_name, bar_dicts in chunk_metrics.items():
+                    accumulated_metrics.setdefault(vae_name, []).extend(bar_dicts)
+
+                # Release heavy tensor data before the next chunk.
+                for heavy_key in ("images", "latents", "recon_images", "reconstructed_bars"):
+                    chunk_context.pop(heavy_key, None)
+                del chunk_context
+                gc.collect()
+
+            # Release the batch bars before ingesting the next file batch.
+            del batch_bars
             gc.collect()
 
-        # After all chunks complete, release the VAE instances and free GPU memory.
+        # After all file batches complete, release VAE instances.
         del vae_instances
         self._free_gpu_memory()
 
@@ -590,13 +606,13 @@ class SweepExecutor:
                 final_metrics_summary[vae_name] = {}
 
         logger.info(
-            "_run_condition: chunked processing complete — %d VAEs evaluated over %d total bars",
+            "_run_condition: streaming processing complete — %d VAEs evaluated over %d total bars",
             len(final_metrics_summary),
-            total_bars,
+            total_bars_processed,
         )
 
         return {
-            "bars": all_bars,
+            "bars": [],  # Don't hold all bars in final result — they've been streamed
             "metrics": accumulated_metrics,
             "metrics_summary": final_metrics_summary,
         }
