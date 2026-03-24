@@ -1,11 +1,11 @@
 ## Experiment 2 — Resolution & Orientation Study
-## 2 pitch_axis orientations x 3 resolutions = 6 rendering variants
+## 3 best VAEs from Exp 1A x 2 pitch_axis x 3 resolutions = 18 conditions
 ## Goal: Determine the best piano-roll image layout for VAE encoding.
 
 paths:
-  data_root: data/
-  output_root: outputs/exp_2/
-  cache_dir: outputs/exp_2/cache/
+  data_root: data/lakh
+  output_root: outputs/exp_2_resolution_study/
+  cache_dir: outputs/exp_2_resolution_study/cache/
 
 data:
   dataset: lakh
@@ -15,10 +15,13 @@ data:
     - guitar
     - piano
     - strings
-  bars_per_instrument: 5000
+  bars_per_instrument: 200000
+  max_bars_total: 1000000
   min_notes_per_bar: 2
   time_steps: 96
   target_resolution: [128, 128]
+  subset:
+    subdirectory: f
 
 # Default render config — pipeline sweeps over render_variants
 render:
@@ -72,12 +75,30 @@ render_variants:
     target_resolution: [256, 256]
 
 vaes:
-  # Best-performing VAE from Exp 1A (placeholder — update after Exp 1A)
-  - model_id: stabilityai/sd-vae-ft-mse
-    name: sd_vae_ft_mse
+  # Top 3 VAEs from Exp 1A results
+  # 1. FLUX family, 16-ch, best PSNR 37.85
+  - model_id: black-forest-labs/FLUX.1-dev
+    name: flux1_dev
+    latent_type: mean
+    dtype: bfloat16
+    batch_size: 64
+    subfolder: vae
+
+  # 2. CogView family, 16-ch, second-best PSNR 36.63
+  - model_id: THUDM/CogView4-6B
+    name: cogview4
+    latent_type: mean
+    dtype: bfloat16
+    batch_size: 64
+    subfolder: vae
+
+  # 3. SD3 family, 16-ch, best musical metrics
+  - model_id: stabilityai/stable-diffusion-3-medium-diffusers
+    name: sd3_medium
     latent_type: mean
     dtype: float32
-    batch_size: 32
+    batch_size: 64
+    subfolder: vae
 
 note_detection:
   method: global_threshold
@@ -102,14 +123,19 @@ metrics:
   - reconstruction
   - harmony
 
+metrics_exclude:
+  - ssim
+  - mutual_information_pitch_time
+
 tracking:
   experiment_name: exp_2_resolution_study
-  wandb_enabled: false
+  wandb_enabled: true
   wandb_project: midi-image-vae
+  wandb_mode: online
   save_reconstructions: true
   save_latents: false
   checkpoint_every_n: 500
 
 seed: 42
 device: cuda
-num_workers: 4
+num_workers: 8
