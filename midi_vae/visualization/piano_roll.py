@@ -197,6 +197,102 @@ def plot_channel_breakdown(
     return fig
 
 
+def plot_pipeline_comparison(
+    gt_image: torch.Tensor,
+    recon_image: torch.Tensor,
+    detected_notes: list,
+    gt_notes: Optional[list] = None,
+    bar_id: str = "",
+    vae_name: str = "",
+    channel_strategy: str = "velocity_only",
+    figsize: tuple[int, int] = (20, 5),
+) -> "matplotlib.figure.Figure":
+    """Plot the full pipeline: GT piano roll, decoded image, detection result.
+
+    Three panels side by side:
+      1. **GT Piano Roll** — the original rendered bar image.
+      2. **VAE Decoded** — the reconstructed image from the VAE.
+      3. **After Detection** — detected notes overlaid on the decoded image,
+         with GT notes shown as dashed outlines for comparison.
+
+    Args:
+        gt_image: Ground-truth image tensor, shape (3, H, W).
+        recon_image: Reconstructed image tensor, shape (3, H, W).
+        detected_notes: List of MidiNote objects from detection stage.
+        gt_notes: Optional list of ground-truth MidiNote objects.
+        bar_id: Bar identifier for the plot title.
+        vae_name: VAE name for the subtitle.
+        channel_strategy: Rendering channel strategy.
+        figsize: Figure width and height in inches.
+
+    Returns:
+        Matplotlib Figure with the three-panel comparison.
+    """
+    import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 3, figsize=figsize)
+
+    # Panel 1: GT piano roll
+    plot_piano_roll(gt_image, title=f"GT Piano Roll — {bar_id}", ax=axes[0])
+
+    # Panel 2: VAE decoded image
+    plot_piano_roll(recon_image, title=f"Decoded — {vae_name}", ax=axes[1])
+
+    # Panel 3: Detection result overlaid on decoded image
+    plot_piano_roll(recon_image, title="After Detection", ax=axes[2])
+
+    # Overlay detected notes as cyan rectangles
+    for note in detected_notes:
+        width = note.offset_step - note.onset_step
+        rect = mpatches.Rectangle(
+            (note.onset_step - 0.5, note.pitch - 0.5),
+            width,
+            1,
+            linewidth=1,
+            edgecolor="cyan",
+            facecolor="none",
+            alpha=0.8,
+        )
+        axes[2].add_patch(rect)
+
+    # Overlay GT notes as dashed green rectangles (if available)
+    if gt_notes:
+        for note in gt_notes:
+            width = note.offset_step - note.onset_step
+            rect = mpatches.Rectangle(
+                (note.onset_step - 0.5, note.pitch - 0.5),
+                width,
+                1,
+                linewidth=1.2,
+                edgecolor="lime",
+                facecolor="none",
+                alpha=0.6,
+                linestyle="--",
+            )
+            axes[2].add_patch(rect)
+
+        detected_patch = mpatches.Patch(
+            edgecolor="cyan", facecolor="none", label="Detected"
+        )
+        gt_patch = mpatches.Patch(
+            edgecolor="lime", facecolor="none", linestyle="--", label="GT"
+        )
+        axes[2].legend(handles=[detected_patch, gt_patch], loc="upper right")
+    else:
+        detected_patch = mpatches.Patch(
+            edgecolor="cyan", facecolor="none", label="Detected"
+        )
+        axes[2].legend(handles=[detected_patch], loc="upper right")
+
+    fig.suptitle(
+        f"Pipeline Comparison — {channel_strategy} | {vae_name}",
+        fontsize=12,
+    )
+    fig.tight_layout()
+    return fig
+
+
 def plot_note_overlay(
     image: torch.Tensor,
     detected_notes: list,

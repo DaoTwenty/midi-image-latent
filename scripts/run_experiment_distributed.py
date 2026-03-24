@@ -832,6 +832,184 @@ def _merge_rank_summaries(output_root: str, num_ranks: int, assignments: list[li
 
 
 # ---------------------------------------------------------------------------
+# Relay file synchronization
+# ---------------------------------------------------------------------------
+
+def _wait_for_all_relay_files(
+    relay_dir: Path,
+    total_conditions: int,
+    timeout: float = 1800.0,
+    poll_interval: float = 5.0,
+) -> None:
+    """Wait until all expected relay files from all ranks have been written.
+
+    In distributed srun mode, rank 0 may finish its conditions well before
+    the slower ranks.  This function blocks until all ``total_conditions``
+    relay files (``cond_XXXX_rank*.json``) appear in the relay directory, so
+    the WandbRelayWatcher has time to pick them all up before being stopped.
+
+    Args:
+        relay_dir: The shared relay directory (NFS).
+        total_conditions: Expected total number of relay files (one per
+            sweep condition across all ranks).
+        timeout: Maximum seconds to wait before giving up.
+        poll_interval: Seconds between directory scans.
+    """
+    logger = get_logger(__name__)
+    start = time.monotonic()
+    while True:
+        existing = set(relay_dir.glob("cond_*.json"))
+        n_found = len(existing)
+        if n_found >= total_conditions:
+            logger.info(
+                "All %d/%d relay files present — proceeding to stop watcher.",
+                n_found,
+                total_conditions,
+            )
+            # Give the watcher one more poll cycle to drain the last files.
+            time.sleep(poll_interval + 1.0)
+            return
+        elapsed = time.monotonic() - start
+        if elapsed >= timeout:
+            logger.warning(
+                "Timed out waiting for relay files (%d/%d found after %.0fs). "
+                "Some conditions may be missing from wandb.",
+                n_found,
+                total_conditions,
+                elapsed,
+            )
+            # Still give the watcher a moment to drain what's available.
+            time.sleep(poll_interval + 1.0)
+            return
+        logger.debug(
+            "Waiting for relay files: %d/%d (%.0fs elapsed)",
+            n_found,
+            total_conditions,
+            elapsed,
+        )
+        time.sleep(poll_interval)
+
+
+# ---------------------------------------------------------------------------
+# Wandb post-processing for distributed runs (rank 0 only)
+# ---------------------------------------------------------------------------
+
+def _log_distributed_summary_table(
+    wandb_logger: "WandbLogger",
+    base_output_root: str,
+    num_ranks: int,
+    assignments: list[list[int]],
+) -> None:
+    """Build and log a wandb summary table from all per-rank JSON summaries.
+
+    Reads ``sweep_summary_rank*.json`` files from each rank's output directory,
+    merges their metrics, and logs a single ``wandb.Table`` to the run.
+
+    Args:
+        wandb_logger: Active WandbLogger instance (rank 0).
+        base_output_root: Parent directory containing ``rank_XXXX/`` subdirs.
+        num_ranks: Total number of ranks.
+        assignments: Per-rank condition index lists.
+    """
+    logger = get_logger(__name__)
+    base = Path(base_output_root)
+
+    all_metrics: dict[str, dict[str, float]] = {}
+
+    for rank in range(num_ranks):
+        if not assignments[rank]:
+            continue
+        rank_dir = base / f"rank_{rank:04d}"
+        summary_path = rank_dir / f"sweep_summary_rank{rank:04d}.json"
+        if not summary_path.exists():
+            continue
+        try:
+            with summary_path.open() as fh:
+                data = json.load(fh)
+            metrics = data.get("metrics_summary", {})
+            all_metrics.update(metrics)
+        except Exception as exc:
+            logger.warning("Failed to read rank %d summary: %s", rank, exc)
+
+    if not all_metrics:
+        logger.warning("No metrics found for summary table.")
+        return
+
+    # Log per-condition metrics
+    for label, metrics in all_metrics.items():
+        wandb_logger.log_metrics(
+            {f"condition/{label}/{k}": v for k, v in metrics.items()},
+        )
+
+    # Build and log the summary table
+    all_keys = sorted(
+        set(k for m in all_metrics.values() for k in m.keys())
+    )
+    columns = ["condition"] + all_keys
+    rows = [
+        [label] + [metrics.get(k, float("nan")) for k in all_keys]
+        for label, metrics in all_metrics.items()
+    ]
+    wandb_logger.log_table("sweep_results", columns=columns, data=rows)
+    logger.info(
+        "Logged summary table to wandb: %d conditions x %d metrics",
+        len(rows), len(all_keys),
+    )
+
+
+def _log_distributed_piano_rolls(
+    wandb_logger: "WandbLogger",
+    base_output_root: str,
+    num_ranks: int,
+) -> None:
+    """Upload piano roll example PNGs from all ranks to wandb.
+
+    Scans ``<base_output_root>/rank_XXXX/_examples/`` directories for PNG
+    files saved by :meth:`SweepExecutor._save_visual_examples` and uploads
+    each as a ``wandb.Image``.
+
+    Args:
+        wandb_logger: Active WandbLogger instance (rank 0).
+        base_output_root: Parent directory containing ``rank_XXXX/`` subdirs.
+        num_ranks: Total number of ranks.
+    """
+    logger = get_logger(__name__)
+    base = Path(base_output_root)
+    total_logged = 0
+
+    try:
+        import wandb
+    except ImportError:
+        logger.warning("wandb not available — skipping piano roll upload.")
+        return
+
+    for rank in range(num_ranks):
+        examples_dir = base / f"rank_{rank:04d}" / "_examples"
+        if not examples_dir.exists():
+            continue
+
+        for condition_dir in sorted(examples_dir.iterdir()):
+            if not condition_dir.is_dir():
+                continue
+            condition_label = condition_dir.name
+
+            for png_path in sorted(condition_dir.glob("*.png")):
+                try:
+                    key = f"examples/{condition_label}/{png_path.stem}"
+                    wandb_logger.log_image(key, wandb.Image(str(png_path)))
+                    total_logged += 1
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to upload %s: %s", png_path.name, exc
+                    )
+
+    if total_logged:
+        logger.info("Uploaded %d piano roll examples to wandb.", total_logged)
+    else:
+        logger.info("No piano roll example PNGs found to upload.")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1048,11 +1226,47 @@ def main() -> int:
         )
 
         # ------------------------------------------------------------------
-        # Rank 0: stop the relay watcher and close the wandb run.
+        # Rank 0: wait for all relay files from other ranks, then stop
+        # the relay watcher and close the wandb run.
         # ------------------------------------------------------------------
         if relay_watcher is not None:
+            # In srun mode, all ranks run under the same srun invocation,
+            # so rank 0 may finish its conditions before other ranks.
+            # Wait for all expected relay files to appear before stopping
+            # the watcher, so no condition metrics are lost in wandb.
+            _wait_for_all_relay_files(
+                relay_dir=relay_dir,
+                total_conditions=num_conditions,
+                timeout=1800,  # 30 min max wait (generous for stragglers)
+                poll_interval=5.0,
+            )
             relay_watcher.stop()
-        if sweep_wandb_logger is not None:
+
+        if sweep_wandb_logger is not None and sweep_wandb_logger.enabled:
+            # ----------------------------------------------------------
+            # Log summary table to wandb (collects from all rank JSONs)
+            # ----------------------------------------------------------
+            _log_distributed_summary_table(
+                sweep_wandb_logger,
+                base_output_root,
+                world_size,
+                assignments,
+            )
+
+            # ----------------------------------------------------------
+            # Upload piano roll example PNGs from all ranks to wandb
+            # ----------------------------------------------------------
+            _log_distributed_piano_rolls(
+                sweep_wandb_logger,
+                base_output_root,
+                world_size,
+            )
+
+            sweep_wandb_logger.log_summary({
+                "num_conditions": num_conditions,
+                "num_ranks": world_size,
+            })
+
             sweep_wandb_logger.finish()
 
         return rc

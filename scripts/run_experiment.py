@@ -413,7 +413,10 @@ def _log_piano_roll_examples(
     try:
         import matplotlib.pyplot as plt
 
-        from midi_vae.visualization.piano_roll import plot_gt_vs_recon
+        from midi_vae.visualization.piano_roll import (
+            plot_gt_vs_recon,
+            plot_pipeline_comparison,
+        )
     except ImportError as exc:
         import logging as _logging
         _logging.getLogger(__name__).warning(
@@ -445,18 +448,23 @@ def _log_piano_roll_examples(
                 )
                 continue
 
-            # Chunked pipeline: use pre-collected (GT, recon) tensor pairs.
+            # Chunked pipeline: use pre-collected visual examples.
+            # Format: (bar_id, gt_tensor, recon_tensor, detected_notes,
+            #          gt_notes, channel_strategy)
             safe_label = label.replace("/", "_")
             total_logged = 0
             for vae_name, examples in visual_examples.items():
                 logged = 0
-                for bar_id, gt_tensor, recon_tensor, channel_strategy in examples:
+                for example in examples:
                     if logged >= max_examples:
                         break
                     try:
-                        fig = plot_gt_vs_recon(
+                        bar_id, gt_tensor, recon_tensor, detected_notes, gt_notes, channel_strategy = example
+                        fig = plot_pipeline_comparison(
                             gt_image=gt_tensor,
                             recon_image=recon_tensor,
+                            detected_notes=detected_notes,
+                            gt_notes=gt_notes if gt_notes else None,
                             bar_id=bar_id,
                             vae_name=vae_name,
                             channel_strategy=channel_strategy,
@@ -469,13 +477,13 @@ def _log_piano_roll_examples(
                     except Exception as exc:
                         _log.warning(
                             "Failed to log piano roll for bar '%s' (VAE '%s'): %s",
-                            bar_id,
+                            example[0] if len(example) > 0 else "?",
                             vae_name,
                             exc,
                         )
             if total_logged:
                 _log.info(
-                    "Logged %d piano roll examples for condition '%s' (from pre-collected chunks)",
+                    "Logged %d pipeline comparison examples for condition '%s'",
                     total_logged,
                     label,
                 )
@@ -737,9 +745,8 @@ def main() -> int:
             ]
             wandb_logger.log_table("sweep_results", columns=columns, data=rows)
 
-        # Note: piano roll image logging is now handled per-condition inside
-        # SweepExecutor.run() via _log_visual_examples(), so images appear in
-        # wandb as the sweep progresses rather than only at the very end.
+        # Log piano roll GT vs reconstructed comparison images to wandb
+        _log_piano_roll_examples(wandb_logger, results, max_examples=4)
 
         # Log final summary
         wandb_logger.log_summary({

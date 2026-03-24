@@ -274,6 +274,15 @@ class SweepExecutor:
                 # when MIDI_VAE_WANDB_RELAY_DIR is not set).
                 self._write_relay(i, condition.label, summary)
 
+            # Save visual example PNGs to disk for later wandb upload
+            # (especially important in distributed mode where only rank 0
+            # has wandb access).
+            visual_examples = context.get("_visual_examples", {})
+            if visual_examples:
+                self._save_visual_examples(
+                    visual_examples, condition.label, cond_config
+                )
+
             all_results[condition.label] = context
 
             # Free GPU memory between conditions to prevent OOM when
@@ -314,6 +323,76 @@ class SweepExecutor:
             wandb_logger=wandb_logger,
             condition_indices=condition_indices,
         )
+
+    @staticmethod
+    def _save_visual_examples(
+        visual_examples: dict[str, list[tuple]],
+        condition_label: str,
+        config: ExperimentConfig,
+    ) -> None:
+        """Save 3-panel pipeline comparison figures as PNG files.
+
+        Each condition's examples are saved to:
+            ``<output_root>/_examples/<safe_label>/<vae_name>_bar_<i>.png``
+
+        Each figure shows three panels:
+          1. GT piano roll (original rendered image)
+          2. VAE decoded image (reconstruction)
+          3. Detected notes overlaid on decoded image (with GT notes for comparison)
+
+        These PNGs can later be uploaded to wandb by the distributed
+        runner's rank 0 process.
+
+        Args:
+            visual_examples: Dict mapping VAE name to list of
+                ``(bar_id, gt_tensor, recon_tensor, detected_notes,
+                gt_notes, channel_strategy)`` tuples.
+            condition_label: Human-readable condition label.
+            config: Experiment config (for output paths).
+        """
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            from midi_vae.visualization.piano_roll import plot_pipeline_comparison
+        except ImportError as exc:
+            logger.warning(
+                "_save_visual_examples: skipping — import failed: %s", exc
+            )
+            return
+
+        safe_label = condition_label.replace("/", "_").replace(" ", "_")
+        example_dir = Path(config.paths.output_root) / "_examples" / safe_label
+        example_dir.mkdir(parents=True, exist_ok=True)
+
+        total_saved = 0
+        for vae_name, examples in visual_examples.items():
+            for idx, (bar_id, gt_tensor, recon_tensor, detected_notes, gt_notes, strategy) in enumerate(examples):
+                try:
+                    fig = plot_pipeline_comparison(
+                        gt_image=gt_tensor,
+                        recon_image=recon_tensor,
+                        detected_notes=detected_notes,
+                        gt_notes=gt_notes if gt_notes else None,
+                        bar_id=bar_id,
+                        vae_name=vae_name,
+                        channel_strategy=strategy,
+                    )
+                    png_path = example_dir / f"{vae_name}_bar_{idx}.png"
+                    fig.savefig(str(png_path), dpi=100, bbox_inches="tight")
+                    plt.close(fig)
+                    total_saved += 1
+                except Exception as exc:
+                    logger.warning(
+                        "_save_visual_examples: failed for bar '%s' (VAE '%s'): %s",
+                        bar_id, vae_name, exc,
+                    )
+
+        if total_saved:
+            logger.info(
+                "_save_visual_examples: saved %d PNGs to %s",
+                total_saved, example_dir,
+            )
 
     @staticmethod
     def _free_gpu_memory() -> None:
@@ -591,6 +670,11 @@ class SweepExecutor:
         total_bars_processed = 0
         pipeline_chunk_idx = 0
 
+        # Visual examples: collect first N GT/recon pairs for piano roll logging.
+        visual_examples: dict[str, list[tuple]] = {}
+        _MAX_VISUAL_EXAMPLES = 4
+        _visual_examples_collected = False
+
         for fb_idx, file_batch in enumerate(
             iter_file_batches(all_files, file_batch_size)
         ):
@@ -654,6 +738,46 @@ class SweepExecutor:
                 for vae_name, bar_dicts in chunk_metrics.items():
                     accumulated_metrics.setdefault(vae_name, []).extend(bar_dicts)
 
+                # Collect visual examples from the first chunk that has
+                # images + reconstructed_bars (after detect stage).
+                # Each example captures: GT image, decoded image, detected
+                # notes, and GT notes — enough for the 3-panel pipeline
+                # comparison figure.
+                if not _visual_examples_collected:
+                    _chunk_images = chunk_context.get("images", [])
+                    _chunk_recons = chunk_context.get("reconstructed_bars", {})
+                    _chunk_bars = chunk_context.get("bars", [])
+                    if _chunk_images and _chunk_recons:
+                        _img_by_id = {img.bar_id: img for img in _chunk_images}
+                        _bar_by_id = {b.bar_id: b for b in _chunk_bars}
+                        for _vae_name, _recon_list in _chunk_recons.items():
+                            _examples: list[tuple] = []
+                            for _recon in _recon_list:
+                                if len(_examples) >= _MAX_VISUAL_EXAMPLES:
+                                    break
+                                _gt_img = _img_by_id.get(_recon.bar_id)
+                                if _gt_img is not None:
+                                    # Get GT notes from BarData for overlay
+                                    _gt_bar = _bar_by_id.get(_recon.bar_id)
+                                    _gt_notes = _gt_bar.metadata.get("notes", []) if _gt_bar else []
+                                    _examples.append((
+                                        _recon.bar_id,
+                                        _gt_img.image.detach().cpu().clone(),
+                                        _recon.recon_image.detach().cpu().clone(),
+                                        _recon.detected_notes,
+                                        _gt_notes,
+                                        config.render.channel_strategy,
+                                    ))
+                            if _examples:
+                                visual_examples[_vae_name] = _examples
+                        if visual_examples:
+                            _visual_examples_collected = True
+                            logger.info(
+                                "_run_condition: collected %d visual examples from chunk %d",
+                                sum(len(v) for v in visual_examples.values()),
+                                pipeline_chunk_idx,
+                            )
+
                 # Release heavy tensor data before the next chunk.
                 for heavy_key in ("images", "latents", "recon_images", "reconstructed_bars"):
                     chunk_context.pop(heavy_key, None)
@@ -697,4 +821,5 @@ class SweepExecutor:
             "bars": [],  # Don't hold all bars in final result — they've been streamed
             "metrics": accumulated_metrics,
             "metrics_summary": final_metrics_summary,
+            "_visual_examples": visual_examples,
         }
