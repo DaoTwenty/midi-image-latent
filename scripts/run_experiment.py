@@ -146,6 +146,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--sweep-render-variants",
+        action="store_true",
+        default=False,
+        help=(
+            "Sweep over all render_variants listed in the config "
+            "(used for exp_2_resolution_orientation.yaml). "
+            "Takes priority over --sweep-strategies when both are given."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -272,6 +282,30 @@ def _extract_sweep_strategies(raw: DictConfig) -> list[str] | None:
     if not strategies_cfg:
         return None
     return [entry.channel_strategy for entry in strategies_cfg]
+
+
+def _extract_sweep_render_variants(raw: DictConfig) -> list[dict] | None:
+    """Extract render variant dicts from the render_variants sweep list.
+
+    Experiments like exp_2 use a top-level ``render_variants`` list in the
+    YAML.  Each entry is a dict with a ``name`` key plus optional overrides for
+    ``channel_strategy``, ``pitch_axis``, ``target_resolution``,
+    ``normalize_range``, and ``resize_method``.
+
+    Args:
+        raw: The raw DictConfig from the YAML file.
+
+    Returns:
+        List of render variant dicts, or None if no render_variants key found.
+    """
+    variants_cfg = OmegaConf.select(raw, "render_variants")
+    if not variants_cfg:
+        return None
+    # Convert each entry to a plain dict for SweepExecutor
+    container = OmegaConf.to_container(variants_cfg, resolve=True)
+    if not isinstance(container, list):
+        return None
+    return [dict(entry) for entry in container]  # type: ignore[arg-type]
 
 
 def _build_pydantic_config(raw: DictConfig) -> ExperimentConfig:
@@ -589,13 +623,21 @@ def main() -> int:
     # Collect sweep axes before mini truncates the VAE list
     sweep_detectors: list[str] | None = None
     sweep_strategies: list[str] | None = None
+    sweep_render_variants: list[dict] | None = None
 
     if args.sweep_detectors:
         sweep_detectors = _extract_sweep_detectors(raw)
         if sweep_detectors:
             logger.info("Sweeping detectors", methods=sweep_detectors)
 
-    if args.sweep_strategies:
+    if args.sweep_render_variants:
+        sweep_render_variants = _extract_sweep_render_variants(raw)
+        if sweep_render_variants:
+            logger.info(
+                "Sweeping render variants",
+                variants=[v.get("name") for v in sweep_render_variants],
+            )
+    elif args.sweep_strategies:
         sweep_strategies = _extract_sweep_strategies(raw)
         if sweep_strategies:
             logger.info("Sweeping channel strategies", strategies=sweep_strategies)
@@ -646,6 +688,7 @@ def main() -> int:
         config=config,
         sweep_strategies=sweep_strategies,
         sweep_detectors=sweep_detectors,
+        sweep_render_variants=sweep_render_variants,
     )
 
     all_conditions = executor.conditions()
