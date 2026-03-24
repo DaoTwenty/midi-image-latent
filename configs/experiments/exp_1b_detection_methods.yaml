@@ -1,11 +1,11 @@
 ## Experiment 1B — Detection Method Comparison
-## Best VAE from Exp 1A, all 8 note detection methods
+## Best VAE from Exp 1A (flux1_dev) x 8 note detection methods = 8 conditions
 ## Goal: Identify the best note detection approach for piano-roll reconstruction.
 
 paths:
-  data_root: data/
-  output_root: outputs/exp_1b/
-  cache_dir: outputs/exp_1b/cache/
+  data_root: data/lakh
+  output_root: outputs/exp_1b_detection_methods/
+  cache_dir: outputs/exp_1b_detection_methods/cache/
 
 data:
   dataset: lakh
@@ -15,24 +15,28 @@ data:
     - guitar
     - piano
     - strings
-  bars_per_instrument: 5000
+  bars_per_instrument: 200000
+  max_bars_total: 1000000
   min_notes_per_bar: 2
   time_steps: 96
   target_resolution: [128, 128]
+  subset:
+    subdirectory: f
 
 render:
-  channel_strategy: vos
+  channel_strategy: velocity_only
   pitch_axis: height
   normalize_range: [-1.0, 1.0]
   resize_method: bilinear
 
 vaes:
-  # Single best-performing VAE from Exp 1A (placeholder — update after Exp 1A)
-  - model_id: stabilityai/sd-vae-ft-mse
-    name: sd_vae_ft_mse
+  # Best-performing VAE from Exp 1A: flux1_dev (PSNR 37.85, onset_f1 0.316)
+  - model_id: black-forest-labs/FLUX.1-dev
+    name: flux1_dev
     latent_type: mean
-    dtype: float32
-    batch_size: 32
+    dtype: bfloat16
+    batch_size: 64
+    subfolder: vae
 
 # Note: this experiment sweeps detection methods programmatically.
 # The detection_methods list below is used by the pipeline sweep logic.
@@ -103,15 +107,20 @@ metrics:
   - reconstruction
   - harmony
   - rhythm
+  - dynamics
+metrics_exclude:
+  - ssim
+  - mutual_information_pitch_time
 
 tracking:
   experiment_name: exp_1b_detection_methods
-  wandb_enabled: false
+  wandb_enabled: true
   wandb_project: midi-image-vae
+  wandb_mode: online
   save_reconstructions: true
   save_latents: false
   checkpoint_every_n: 500
 
 seed: 42
 device: cuda
-num_workers: 4
+num_workers: 8
