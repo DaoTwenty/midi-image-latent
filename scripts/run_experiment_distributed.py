@@ -151,6 +151,16 @@ def parse_args() -> argparse.Namespace:
         help="Sweep over all channel_strategies listed in the config.",
     )
     parser.add_argument(
+        "--sweep-render-variants",
+        action="store_true",
+        default=False,
+        help=(
+            "Sweep over all render_variants listed in the config "
+            "(used for exp_2_resolution_orientation.yaml). "
+            "Takes priority over --sweep-strategies when both are given."
+        ),
+    )
+    parser.add_argument(
         "--max-files",
         type=int,
         default=None,
@@ -242,6 +252,24 @@ def _extract_sweep_strategies(raw: DictConfig) -> list[str] | None:
     if not strategies_cfg:
         return None
     return [entry.channel_strategy for entry in strategies_cfg]
+
+
+def _extract_sweep_render_variants(raw: DictConfig) -> list[dict] | None:
+    """Extract render variant dicts from the render_variants sweep list.
+
+    Args:
+        raw: The raw DictConfig from the YAML file.
+
+    Returns:
+        List of render variant dicts, or None if no render_variants key found.
+    """
+    variants_cfg = OmegaConf.select(raw, "render_variants")
+    if not variants_cfg:
+        return None
+    container = OmegaConf.to_container(variants_cfg, resolve=True)
+    if not isinstance(container, list):
+        return None
+    return [dict(entry) for entry in container]  # type: ignore[arg-type]
 
 
 _EXTRA_KEYS = {
@@ -428,6 +456,8 @@ def _build_worker_command(
         cmd.append("--sweep-detectors")
     if args.sweep_strategies:
         cmd.append("--sweep-strategies")
+    if args.sweep_render_variants:
+        cmd.append("--sweep-render-variants")
     if args.max_files:
         cmd += ["--max-files", str(args.max_files)]
     if args.subset_dir:
@@ -500,9 +530,12 @@ def _run_worker(
     # Extract sweep axes before building the executor
     sweep_detectors: list[str] | None = None
     sweep_strategies: list[str] | None = None
+    sweep_render_variants: list[dict] | None = None
     if args.sweep_detectors:
         sweep_detectors = _extract_sweep_detectors(raw)
-    if args.sweep_strategies:
+    if getattr(args, "sweep_render_variants", False):
+        sweep_render_variants = _extract_sweep_render_variants(raw)
+    elif args.sweep_strategies:
         sweep_strategies = _extract_sweep_strategies(raw)
 
     # Build executor
@@ -510,6 +543,7 @@ def _run_worker(
         config=config,
         sweep_strategies=sweep_strategies,
         sweep_detectors=sweep_detectors,
+        sweep_render_variants=sweep_render_variants,
     )
 
     set_global_seed(config.seed)
@@ -956,9 +990,12 @@ def main() -> int:
         # Collect sweep axes
         sweep_detectors = None
         sweep_strategies = None
+        sweep_render_variants = None
         if args.sweep_detectors:
             sweep_detectors = _extract_sweep_detectors(raw)
-        if args.sweep_strategies:
+        if getattr(args, "sweep_render_variants", False):
+            sweep_render_variants = _extract_sweep_render_variants(raw)
+        elif args.sweep_strategies:
             sweep_strategies = _extract_sweep_strategies(raw)
 
         try:
@@ -972,6 +1009,7 @@ def main() -> int:
             config=config,
             sweep_strategies=sweep_strategies,
             sweep_detectors=sweep_detectors,
+            sweep_render_variants=sweep_render_variants,
         )
         all_conditions = temp_executor.conditions()
         num_conditions = len(all_conditions)
@@ -1065,9 +1103,12 @@ def main() -> int:
     # Collect sweep axes
     sweep_detectors = None
     sweep_strategies = None
+    sweep_render_variants = None
     if args.sweep_detectors:
         sweep_detectors = _extract_sweep_detectors(raw)
-    if args.sweep_strategies:
+    if getattr(args, "sweep_render_variants", False):
+        sweep_render_variants = _extract_sweep_render_variants(raw)
+    elif args.sweep_strategies:
         sweep_strategies = _extract_sweep_strategies(raw)
 
     try:
@@ -1085,6 +1126,7 @@ def main() -> int:
         config=config,
         sweep_strategies=sweep_strategies,
         sweep_detectors=sweep_detectors,
+        sweep_render_variants=sweep_render_variants,
     )
     all_conditions = executor.conditions()
     num_conditions = len(all_conditions)
