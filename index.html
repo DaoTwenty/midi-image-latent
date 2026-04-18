@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Multi-Agent Claude Code System — MIDI Image VAE</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0C0C0C;
+    color: #E0DDD5;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+    min-height: 100vh;
+  }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.2/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const AGENTS = {
+  orchestrator: {
+    label: "ORCHESTRATOR", role: "Team Lead",
+    color: "#E8D5B7", textColor: "#3D2B1F",
+    desc: "Spawns teammates, monitors progress, merges work, adapts to problems",
+    owns: ["Coordination", "Merges to main", "Sprint planning", "Problem resolution"],
+    model: "Opus",
+  },
+  alpha: {
+    label: "ALPHA", role: "Core Infrastructure",
+    color: "#C4B5E0", textColor: "#2D1B4E",
+    desc: "Config system, registry, ABCs, pipeline runner, experiment tracking",
+    owns: ["config.py", "registry.py", "data/types.py", "pipelines/base.py", "tracking/", "utils/"],
+    model: "Sonnet",
+  },
+  bravo: {
+    label: "BRAVO", role: "Data Pipeline",
+    color: "#B5D8C7", textColor: "#1B3D2F",
+    desc: "MIDI preprocessing, channel strategies, transforms, datasets",
+    owns: ["data/preprocessing.py", "data/rendering.py", "data/transforms.py", "data/datasets.py", "pipelines/ingest.py"],
+    model: "Sonnet",
+  },
+  charlie: {
+    label: "CHARLIE", role: "Model Integration",
+    color: "#E8C8A0", textColor: "#4A3520",
+    desc: "12 VAE wrappers, sub-latent models, conditioning, Transformer",
+    owns: ["models/vae_registry.py", "models/sublatent/*.py", "models/sequence/", "pipelines/encode.py"],
+    model: "Sonnet",
+  },
+  delta: {
+    label: "DELTA", role: "Algorithms",
+    color: "#A8C8E8", textColor: "#1B3050",
+    desc: "8 note detection methods, 45+ metrics across 9 categories",
+    owns: ["note_detection/*.py", "metrics/*.py", "pipelines/detect.py", "pipelines/evaluate.py"],
+    model: "Sonnet",
+  },
+  echo: {
+    label: "ECHO", role: "QA & Integration",
+    color: "#E0A8A8", textColor: "#4A1B1B",
+    desc: "Tests, integration tests, experiment configs, visualization",
+    owns: ["tests/", "visualization/", "configs/experiments/", "scripts/"],
+    model: "Sonnet",
+  },
+};
+
+const SPRINTS = [
+  { id: 0, label: "Sprint 0", title: "Foundation", phases: [
+    { agents: ["alpha"], desc: "ALPHA builds skeleton: types, registry, config, all ABCs" },
+    { agents: ["echo"], desc: "ECHO sets up test infrastructure and fixtures" },
+  ]},
+  { id: 1, label: "Sprint 1", title: "Parallel Build", phases: [
+    { agents: ["bravo", "charlie", "delta", "echo"], desc: "All 4 work in parallel on independent modules" },
+  ]},
+  { id: 2, label: "Sprint 2", title: "Extended Build", phases: [
+    { agents: ["bravo", "charlie", "delta", "echo"], desc: "Remaining VAEs, advanced detectors, full metrics, integration tests" },
+  ]},
+  { id: 3, label: "Sprint 3", title: "Integration", phases: [
+    { agents: ["alpha", "charlie", "delta", "echo"], desc: "Pipeline stages, sub-latent training, information metrics, full pipeline test" },
+  ]},
+];
+
+function App() {
+  const [selectedAgent, setSelectedAgent] = useState(null);
+  const [activeSprint, setActiveSprint] = useState(0);
+  const [view, setView] = useState("architecture");
+  const [pulse, setPulse] = useState(true);
+
+  useEffect(() => {
+    const t = setInterval(() => setPulse(p => !p), 1500);
+    return () => clearInterval(t);
+  }, []);
+
+  const agentKeys = Object.keys(AGENTS).filter(k => k !== "orchestrator");
+  const sprint = SPRINTS[activeSprint];
+  const activeAgents = sprint.phases.flatMap(p => p.agents);
+
+  const tabStyle = (v) => ({
+    padding: "6px 14px", border: "none", borderRadius: 4,
+    fontSize: 11, fontFamily: "inherit", fontWeight: 600,
+    cursor: "pointer", textTransform: "uppercase", letterSpacing: "0.5px",
+    background: view === v ? "#2A2A2A" : "transparent",
+    color: view === v ? "#F0EDE5" : "#555", transition: "all 0.2s",
+  });
+
+  return (
+    <div style={{ padding: 24 }}>
+      {/* Header */}
+      <div style={{ marginBottom: 28, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: "-0.5px", color: "#F0EDE5" }}>
+            Multi-Agent Claude Code System
+          </h1>
+          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#666", fontWeight: 400 }}>
+            MIDI Image VAE — Orchestrated Development Architecture
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 4, background: "#1A1A1A", borderRadius: 6, padding: 3 }}>
+          {["architecture", "sprints", "gitflow"].map(v => (
+            <button key={v} onClick={() => setView(v)} style={tabStyle(v)}>{v}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* ═══ Architecture View ═══ */}
+      {view === "architecture" && (<div>
+        {/* Orchestrator card */}
+        <div onClick={() => setSelectedAgent(selectedAgent === "orchestrator" ? null : "orchestrator")}
+          style={{ background: "#1A1816", border: `1px solid ${selectedAgent === "orchestrator" ? AGENTS.orchestrator.color : "#2A2520"}`, borderRadius: 10, padding: "16px 20px", marginBottom: 12, cursor: "pointer", transition: "all 0.25s" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ width: 10, height: 10, borderRadius: "50%", background: AGENTS.orchestrator.color, boxShadow: pulse ? `0 0 8px ${AGENTS.orchestrator.color}` : "none", transition: "box-shadow 0.8s" }} />
+            <span style={{ fontSize: 14, fontWeight: 700, color: AGENTS.orchestrator.color }}>{AGENTS.orchestrator.label}</span>
+            <span style={{ fontSize: 11, color: "#666" }}>— {AGENTS.orchestrator.role}</span>
+            <span style={{ marginLeft: "auto", fontSize: 10, padding: "2px 8px", background: "#2A2520", borderRadius: 3, color: "#999" }}>{AGENTS.orchestrator.model}</span>
+          </div>
+          {selectedAgent === "orchestrator" && (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #2A2520" }}>
+              <p style={{ margin: "0 0 8px", fontSize: 12, color: "#999" }}>{AGENTS.orchestrator.desc}</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {AGENTS.orchestrator.owns.map(f => (
+                  <span key={f} style={{ fontSize: 10, padding: "2px 8px", background: "#1E1A16", border: "1px solid #3A3020", borderRadius: 3, color: "#B0A890" }}>{f}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Connection lines SVG */}
+        <div style={{ display: "flex", justifyContent: "center", padding: "0 0 4px" }}>
+          <svg width="100%" height="28" style={{ maxWidth: 800 }}>
+            <line x1="50%" y1="0" x2="50%" y2="14" stroke="#333" strokeWidth="1.5" />
+            <line x1="10%" y1="14" x2="90%" y2="14" stroke="#333" strokeWidth="1.5" />
+            {[0,1,2,3,4].map(i => (
+              <g key={i}>
+                <line x1={`${10+i*20}%`} y1="14" x2={`${10+i*20}%`} y2="28" stroke="#333" strokeWidth="1.5" />
+                <circle cx={`${10+i*20}%`} cy="14" r="2.5" fill="#333" />
+              </g>
+            ))}
+            <circle cx="50%" cy="0" r="2.5" fill="#333" />
+          </svg>
+        </div>
+
+        {/* Agent cards grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8 }}>
+          {agentKeys.map(key => {
+            const a = AGENTS[key];
+            const isActive = activeAgents.includes(key);
+            const isSelected = selectedAgent === key;
+            return (
+              <div key={key} onClick={() => setSelectedAgent(isSelected ? null : key)}
+                style={{ background: "#141414", border: `1px solid ${isSelected ? a.color : "#222"}`, borderRadius: 8, padding: 14, cursor: "pointer", transition: "all 0.25s", opacity: isActive ? 1 : 0.4, position: "relative" }}>
+                {isActive && <div style={{ position: "absolute", top: 8, right: 8, width: 6, height: 6, borderRadius: "50%", background: "#4CAF50", boxShadow: pulse ? "0 0 6px #4CAF50" : "none", transition: "box-shadow 0.8s" }} />}
+                <div style={{ fontSize: 12, fontWeight: 700, color: a.color, marginBottom: 2 }}>{a.label}</div>
+                <div style={{ fontSize: 10, color: "#666", marginBottom: 8 }}>{a.role}</div>
+                <div style={{ fontSize: 10, padding: "2px 6px", background: "#1A1A1A", borderRadius: 3, color: "#777", display: "inline-block", marginBottom: 8 }}>{a.model}</div>
+                {isSelected && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #222" }}>
+                    <p style={{ margin: "0 0 8px", fontSize: 11, color: "#888", lineHeight: 1.4 }}>{a.desc}</p>
+                    <div style={{ fontSize: 10, color: "#555", marginBottom: 4, fontWeight: 600 }}>Owns:</div>
+                    {a.owns.map(f => (
+                      <div key={f} style={{ fontSize: 10, padding: "2px 6px", margin: "2px 0", background: "#1A1A1A", borderRadius: 3, color: "#888", borderLeft: `2px solid ${a.color}40` }}>{f}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Sprint selector */}
+        <div style={{ marginTop: 20, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, color: "#555", marginRight: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>Active Sprint:</span>
+          {SPRINTS.map(s => (
+            <button key={s.id} onClick={() => setActiveSprint(s.id)}
+              style={{ padding: "5px 12px", border: `1px solid ${activeSprint === s.id ? "#555" : "#222"}`, borderRadius: 4, fontSize: 11, fontFamily: "inherit", cursor: "pointer", background: activeSprint === s.id ? "#1E1E1E" : "transparent", color: activeSprint === s.id ? "#DDD" : "#555", transition: "all 0.2s" }}>
+              S{s.id}: {s.title}
+            </button>
+          ))}
+        </div>
+
+        {/* Sprint detail box */}
+        <div style={{ marginTop: 12, padding: 16, background: "#141414", border: "1px solid #222", borderRadius: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#CCC", marginBottom: 8 }}>{sprint.label} — {sprint.title}</div>
+          {sprint.phases.map((phase, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "8px 0", borderTop: i > 0 ? "1px solid #1E1E1E" : "none" }}>
+              <span style={{ fontSize: 10, color: "#555", fontWeight: 600, minWidth: 50, paddingTop: 2 }}>Phase {i+1}</span>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", minWidth: 140 }}>
+                {phase.agents.map(a => (
+                  <span key={a} style={{ fontSize: 10, padding: "2px 8px", background: `${AGENTS[a].color}15`, border: `1px solid ${AGENTS[a].color}30`, borderRadius: 3, color: AGENTS[a].color, fontWeight: 600 }}>{AGENTS[a].label}</span>
+                ))}
+              </div>
+              <span style={{ fontSize: 11, color: "#777" }}>{phase.desc}</span>
+            </div>
+          ))}
+        </div>
+      </div>)}
+
+      {/* ═══ Sprints View ═══ */}
+      {view === "sprints" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {SPRINTS.map(sp => (
+            <div key={sp.id} style={{ background: "#141414", border: "1px solid #222", borderRadius: 8, padding: 20 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 16 }}>
+                <span style={{ fontSize: 28, fontWeight: 800, color: "#2A2A2A" }}>S{sp.id}</span>
+                <span style={{ fontSize: 15, fontWeight: 700, color: "#CCC" }}>{sp.title}</span>
+              </div>
+              {sp.phases.map((phase, pi) => (
+                <div key={pi} style={{ marginBottom: pi < sp.phases.length-1 ? 16 : 0 }}>
+                  {sp.phases.length > 1 && (
+                    <div style={{ fontSize: 10, color: "#555", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      Phase {pi+1} {pi === 0 ? "(sequential)" : "(after merge)"}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {phase.agents.map(key => {
+                      const a = AGENTS[key];
+                      return (
+                        <div key={key} style={{ flex: "1 1 180px", padding: "10px 14px", background: `${a.color}08`, border: `1px solid ${a.color}20`, borderRadius: 6, borderLeft: `3px solid ${a.color}60` }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: a.color, marginBottom: 4 }}>{a.label}</div>
+                          <div style={{ fontSize: 10, color: "#777", lineHeight: 1.5 }}>{a.desc}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {pi < sp.phases.length-1 && (
+                    <div style={{ textAlign: "center", padding: "8px 0", fontSize: 10, color: "#444" }}>↓ merge to main, sync worktrees ↓</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ═══ Git Flow View ═══ */}
+      {view === "gitflow" && (<div>
+        <div style={{ background: "#141414", border: "1px solid #222", borderRadius: 8, padding: 20, marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#CCC", marginBottom: 16 }}>Git Worktree Isolation Model</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: "#1A1A1A", borderRadius: 6, marginBottom: 8, borderLeft: "3px solid #FFF" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#FFF" }}>main</span>
+            <span style={{ fontSize: 10, color: "#666" }}>— single source of truth, only orchestrator merges here</span>
+          </div>
+          <div style={{ paddingLeft: 20, borderLeft: "1px solid #222", marginLeft: 12 }}>
+            {agentKeys.map(key => {
+              const a = AGENTS[key];
+              return (
+                <div key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", margin: "6px 0", background: "#141414", borderRadius: 6, borderLeft: `3px solid ${a.color}80`, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: a.color, minWidth: 70 }}>{a.label}</span>
+                  <span style={{ fontSize: 10, color: "#666" }}>.claude/worktrees/{key}/</span>
+                  <span style={{ fontSize: 10, color: "#444", marginLeft: "auto" }}>branch: feature/{key}/sprint*</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div style={{ background: "#141414", border: "1px solid #222", borderRadius: 8, padding: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#CCC", marginBottom: 16 }}>Merge Cycle</div>
+          {[
+            { step: "1", label: "Agent commits", desc: "Each agent works in its worktree, commits with [ROLE] prefix", color: "#666" },
+            { step: "2", label: "Agent pushes", desc: "/project:pr validates ownership, tests, then pushes feature branch", color: "#666" },
+            { step: "3", label: "Orchestrator reviews", desc: "Checks git log, runs diff, verifies tests pass on merge", color: AGENTS.orchestrator.color },
+            { step: "4", label: "Squash-merge to main", desc: "git merge --squash feature/<role>/sprint* → clean single commit", color: "#FFF" },
+            { step: "5", label: "Sync all worktrees", desc: "Every agent's worktree rebases onto updated main", color: "#4CAF50" },
+            { step: "6", label: "Next task dispatched", desc: "Orchestrator assigns next sprint task to available agents", color: AGENTS.orchestrator.color },
+          ].map(item => (
+            <div key={item.step} style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "10px 0", borderBottom: "1px solid #1A1A1A" }}>
+              <span style={{ fontSize: 18, fontWeight: 800, color: "#222", minWidth: 28 }}>{item.step}</span>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: item.color, marginBottom: 2 }}>{item.label}</div>
+                <div style={{ fontSize: 11, color: "#666" }}>{item.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>)}
+
+      {/* Footer */}
+      <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #1A1A1A", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          {Object.entries(AGENTS).map(([key, a]) => (
+            <div key={key} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <div style={{ width: 8, height: 8, borderRadius: 2, background: a.color }} />
+              <span style={{ fontSize: 10, color: "#555" }}>{a.label}</span>
+            </div>
+          ))}
+        </div>
+        <span style={{ fontSize: 10, color: "#333" }}>Agent Teams + Git Worktree Isolation</span>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
