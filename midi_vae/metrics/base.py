@@ -78,28 +78,47 @@ class MetricsEngine:
     on each (ground_truth, reconstruction) pair, and collects results.
     """
 
-    def __init__(self, metric_names: list[str]) -> None:
+    def __init__(
+        self,
+        metric_names: list[str],
+        exclude: list[str] | None = None,
+    ) -> None:
         """Initialize the metrics engine.
 
         Args:
-            metric_names: List of metric names to evaluate. Use ['all'] to
-                load all registered metrics.
+            metric_names: List of metric/category names to evaluate.
+                Supports three entry types mixed freely:
+                  - ``"all"``          — every registered metric
+                  - category name      — e.g. ``"reconstruction"``, ``"harmony"``
+                  - individual name    — e.g. ``"pixel_mse"``, ``"ssim"``
+                Prefix an entry with ``-`` to subtract it after expansion:
+                  ``["harmony", "-interval_histogram_correlation"]``
+            exclude: Optional explicit exclude list (applied after expansion).
+                Equivalent to prefixing names with ``-`` in *metric_names*.
         """
         self.metrics: list[Metric] = []
-        self._load_metrics(metric_names)
+        self._load_metrics(metric_names, exclude=exclude)
 
     # Category -> individual metric name mapping
+    # NOTE: ssim and mutual_information_pitch_time are registered but excluded
+    # from default categories due to high per-bar cost (3.7ms and 1.2ms
+    # respectively — together 61% of total metric time).  They can still be
+    # requested explicitly by name when needed.
+    # onset_precision / onset_recall removed — onset_f1 already returns all
+    # three values (precision, recall, f1) in a single call.
+    # velocity_histogram_kl removed — redundant with velocity_mse +
+    # velocity_correlation which together capture the same signal.
     _CATEGORIES: dict[str, list[str]] = {
-        "reconstruction": ["pixel_mse", "ssim", "psnr"],
+        "reconstruction": ["pixel_mse", "psnr"],
         "harmony": [
-            "onset_f1", "onset_precision", "onset_recall",
+            "onset_f1",
             "note_density_pearson", "pitch_class_histogram_correlation",
             "interval_histogram_correlation",
         ],
         "rhythm": ["ioi_distribution_kl", "groove_consistency"],
-        "dynamics": ["velocity_mse", "velocity_correlation", "velocity_histogram_kl"],
+        "dynamics": ["velocity_mse", "velocity_correlation"],
         "information": [
-            "note_entropy_diff", "mutual_information_pitch_time",
+            "note_entropy_diff",
             "kl_divergence_pitch_dist", "activation_sparsity",
         ],
         "latent_space": [
@@ -119,26 +138,53 @@ class MetricsEngine:
         ],
     }
 
-    def _load_metrics(self, metric_names: list[str]) -> None:
+    def _load_metrics(
+        self,
+        metric_names: list[str],
+        exclude: list[str] | None = None,
+    ) -> None:
         """Load metric instances from the registry.
 
-        Accepts individual metric names, category names (e.g., 'reconstruction',
-        'harmony'), or ['all'] to load everything.
+        Supports individual names, category names, ``"all"``, inline
+        negations (``"-ssim"``), and an explicit *exclude* list.
+
+        Resolution order:
+        1. Expand ``"all"`` or category names into individual metric names.
+        2. Collect inline negations (entries starting with ``-``).
+        3. Merge inline negations with *exclude* list.
+        4. Remove excluded names from the final set.
 
         Args:
-            metric_names: List of metric names, category names, or ['all'].
+            metric_names: List of metric names, category names, ``"all"``,
+                or negated names (prefixed with ``-``).
+            exclude: Optional explicit list of metric names to exclude.
         """
-        if metric_names == ["all"]:
-            available = ComponentRegistry.list_components("metric")
-            names = available.get("metric", [])
-        else:
-            # Expand category names to individual metrics
-            names: list[str] = []
-            for entry in metric_names:
-                if entry in self._CATEGORIES:
-                    names.extend(self._CATEGORIES[entry])
-                else:
-                    names.append(entry)
+        # Separate additions from inline negations
+        additions: list[str] = []
+        negations: set[str] = set()
+        for entry in metric_names:
+            stripped = entry.strip()
+            if stripped.startswith("-"):
+                negations.add(stripped.lstrip("-").strip())
+            elif stripped == "all":
+                available = ComponentRegistry.list_components("metric")
+                additions.extend(available.get("metric", []))
+            elif stripped in self._CATEGORIES:
+                additions.extend(self._CATEGORIES[stripped])
+            else:
+                additions.append(stripped)
+
+        # Merge inline negations with explicit exclude
+        if exclude:
+            negations.update(exclude)
+
+        # De-duplicate while preserving order, then remove excluded
+        seen: set[str] = set()
+        names: list[str] = []
+        for name in additions:
+            if name not in seen and name not in negations:
+                seen.add(name)
+                names.append(name)
 
         for name in names:
             try:

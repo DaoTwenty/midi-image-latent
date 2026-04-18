@@ -53,7 +53,10 @@ class EvaluateStage(PipelineStage):
             MetricsEngine loaded with the metrics listed in config.metrics.
         """
         if self._engine is None:
-            self._engine = MetricsEngine(list(self.config.metrics))
+            self._engine = MetricsEngine(
+                list(self.config.metrics),
+                exclude=list(self.config.metrics_exclude),
+            )
         return self._engine
 
     def io(self) -> StageIO:

@@ -54,6 +54,14 @@ sublatent:
 metrics:
   - all
 
+# Metrics to exclude globally (saves ~5ms/bar for the two heaviest).
+# Individual experiments can override or extend this list.
+# Use inline negation in `metrics:` for one-off exclusions, e.g.:
+#   metrics: [reconstruction, harmony, "-interval_histogram_correlation"]
+metrics_exclude:
+  - ssim                              # 3.7ms/bar — 46% of metric cost
+  - mutual_information_pitch_time     # 1.2ms/bar — 15% of metric cost
+
 tracking:
   experiment_name: default
   wandb_enabled: true

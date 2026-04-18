@@ -164,6 +164,7 @@ class ExperimentConfig(BaseModel):
     note_detection: NoteDetectionConfig = Field(default_factory=NoteDetectionConfig)
     sublatent: SubLatentConfig = Field(default_factory=SubLatentConfig)
     metrics: list[str] = Field(default_factory=lambda: ["all"])
+    metrics_exclude: list[str] = Field(default_factory=list)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     seed: int = 42
     device: str = "cuda"

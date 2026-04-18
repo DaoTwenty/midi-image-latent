@@ -15,8 +15,8 @@ data:
     - guitar
     - piano
     - strings
-  bars_per_instrument: 5000
-  max_bars_total: 25000        # 5 instruments × 5000 — global cap across all files
+  bars_per_instrument: 200000
+  max_bars_total: 1000000      # 5 instruments × 200000 — scales to fill 3-6 hour jobs
   min_notes_per_bar: 2
   time_steps: 96
   target_resolution: [128, 128]
@@ -35,39 +35,39 @@ vaes:
     name: sd_vae_ft_mse
     latent_type: mean
     dtype: float32
-    batch_size: 4
+    batch_size: 64
 
   - model_id: stabilityai/sdxl-vae
     name: sdxl_vae
     latent_type: mean
     dtype: float32
-    batch_size: 4
+    batch_size: 64
 
   - model_id: zelaki/eq-vae-ema
     name: eq_vae_ema
     latent_type: mean
     dtype: float32
-    batch_size: 4
+    batch_size: 64
 
   - model_id: KBlueLeaf/EQ-SDXL-VAE
     name: eq_sdxl_vae
     latent_type: mean
     dtype: float32
-    batch_size: 4
+    batch_size: 64
 
   # SD-family: 4 latent channels, subfolder load
   - model_id: CompVis/stable-diffusion-v1-4
     name: sd_v1_4
     latent_type: mean
     dtype: float32
-    batch_size: 4
+    batch_size: 64
     subfolder: vae
 
   - model_id: playgroundai/playground-v2.5-1024px-aesthetic
     name: playground_v25
     latent_type: mean
     dtype: float32
-    batch_size: 4
+    batch_size: 64
     subfolder: vae
 
   # High-channel family: 16 latent channels, subfolder load
@@ -75,41 +75,41 @@ vaes:
     name: sd3_medium
     latent_type: mean
     dtype: float32
-    batch_size: 4
+    batch_size: 64
     subfolder: vae
 
   - model_id: black-forest-labs/FLUX.1-dev
     name: flux1_dev
     latent_type: mean
     dtype: bfloat16
-    batch_size: 4
+    batch_size: 64
     subfolder: vae
 
   - model_id: black-forest-labs/FLUX.1-Kontext-dev
     name: flux1_kontext
     latent_type: mean
     dtype: bfloat16
-    batch_size: 4
+    batch_size: 64
     subfolder: vae
 
   - model_id: black-forest-labs/FLUX.2-dev
     name: flux2_dev
     latent_type: mean
     dtype: bfloat16
-    batch_size: 4
+    batch_size: 64
     subfolder: vae
 
   - model_id: fal/FLUX.2-Tiny-AutoEncoder
     name: flux2_tiny
     latent_type: mean
     dtype: bfloat16
-    batch_size: 4
+    batch_size: 64
 
   - model_id: THUDM/CogView4-6B
     name: cogview4
     latent_type: mean
     dtype: bfloat16
-    batch_size: 4
+    batch_size: 64
     subfolder: vae
 
 note_detection:
@@ -136,6 +136,9 @@ metrics:
   - harmony
   - rhythm
   - dynamics
+metrics_exclude:
+  - ssim
+  - mutual_information_pitch_time
 
 tracking:
   experiment_name: exp_1a_vae_comparison
